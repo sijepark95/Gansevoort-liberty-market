@@ -4,7 +4,7 @@ import { collection, query, where, onSnapshot } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { auth, db, storage, signInWithGoogle, signInWithEmail, signUpWithEmail, sendPasswordReset, handleSignOut, handleFirestoreError, OperationType, safeAddDoc, safeSetDoc, safeUpdateDoc, safeDeleteDoc, safeBulkDeleteDocs } from "./lib/firebase";
 import { Ingredient, Recipe, ParsedInvoiceItem, Timecard, Employee, DailySale, Vendor, Department, Restaurant, GroceryPurchase, GroceryShoppingItem, ConsumptionLog } from "./types";
-import { getGramsOrMlEquivalent, calculateIngredientUnitPrice, calculatePoundData } from "./lib/unitConverter";
+import { getGramsOrMlEquivalent, calculateIngredientUnitPrice, calculatePoundData, extractWeightSpecFromName, convertFromGrams } from "./lib/unitConverter";
 import { getNormalizedVendorKey } from "./lib/vendorUtils";
 import MainHeader from "./components/MainHeader";
 import type { QueueItem } from "./components/AIParserView";
@@ -24,6 +24,7 @@ const OrderTemplatesView = React.lazy(() => import("./components/OrderTemplatesV
 const OrderListView = React.lazy(() => import("./components/OrderListView").then(module => ({ default: module.OrderListView })));
 const InvoiceManagementView = React.lazy(() => import("./components/InvoiceManagementView").then(module => ({ default: module.InvoiceManagementView })));
 const ReportCenterView = React.lazy(() => import("./components/ReportCenterView").then(module => ({ default: module.ReportCenterView })));
+const SystemArchitectureView = React.lazy(() => import("./components/SystemArchitectureView"));
 import { AIChatbot } from "./components/AIChatbot";
 const SalesDataView = React.lazy(() => import("./components/SalesDataView"));
 import LandingPage from "./components/LandingPage";
@@ -61,7 +62,8 @@ import {
   KeyRound,
   Loader2,
   ShoppingCart,
-  Plus
+  Plus,
+  Database
 } from "lucide-react";
 
 
@@ -1415,31 +1417,25 @@ export default function App() {
           continue;
         }
 
-        // Check if an identical item already exists in catalog
-        const duplicateIng = ingredients.find(ing => 
-          (ing.name || "").toLowerCase().trim() === (name || "").toLowerCase().trim() &&
-          (ing.source || "").toLowerCase().trim() === (itemSource || "").toLowerCase().trim() &&
-          ing.quantity === coercedQty &&
-          ing.unit === parsedUnit &&
-          Math.abs((ing.price || 0) - coercedPrice) < 0.001
-        );
-
-        if (duplicateIng) {
-          // HIJACK: We found an exact duplicate (e.g. from a recurring invoice or missing invoice number).
-          // Map it to pile the stock and log consumption instead of skipping it entirely!
+        // Check if an identical item or ingredient with the same name already exists in catalog
+        const matchingBaseIng = ingredients.find(ing => (ing.name || "").toLowerCase().trim() === (name || "").toLowerCase().trim());
+        
+        if (matchingBaseIng) {
+          // If an ingredient with the exact same name already exists in catalog,
+          // map onto it so stock piles and rates update on the existing stock item
           item.action = "map";
-          item.targetIngredientId = duplicateIng.id;
+          item.targetIngredientId = matchingBaseIng.id;
           itemsToApply.push(item);
           continue;
         }
 
-        // Try to see if there is an existing ingredient with the same name which has weightPerCase specified
-        const matchingBaseIng = ingredients.find(ing => ing.name.toLowerCase().trim() === name.toLowerCase().trim());
-        
         let finalPricePerGram = 0;
-        const finalWeightPerCase = item.parsedItem.weightPerCase !== undefined ? Number(item.parsedItem.weightPerCase) : matchingBaseIng?.weightPerCase;
-        const finalWeightPerCaseUnit = item.parsedItem.weightPerCaseUnit || matchingBaseIng?.weightPerCaseUnit || "lb";
-        const finalUsability = item.parsedItem.usabilityPercentage !== undefined ? Number(item.parsedItem.usabilityPercentage) : (matchingBaseIng?.usabilityPercentage !== undefined ? matchingBaseIng.usabilityPercentage : 100);
+        const nameSpec = extractWeightSpecFromName(name);
+        const finalWeightPerCase = item.parsedItem.weightPerCase !== undefined && Number(item.parsedItem.weightPerCase) > 0
+          ? Number(item.parsedItem.weightPerCase)
+          : nameSpec?.weight;
+        const finalWeightPerCaseUnit = item.parsedItem.weightPerCaseUnit || nameSpec?.unit || "lb";
+        const finalUsability = item.parsedItem.usabilityPercentage !== undefined ? Number(item.parsedItem.usabilityPercentage) : 100;
 
         finalPricePerGram = calculateIngredientUnitPrice({
           price: coercedPrice,
@@ -1504,20 +1500,82 @@ export default function App() {
             console.error("Failed to log consumption for created ingredient:", consErr);
           }
         }
-      } else if (item.action === "map" && item.targetIngredientId) {
-        const baseIng = ingredients.find(ing => ing.id === item.targetIngredientId);
-        const targetIng = localIngredientsMap.get(item.targetIngredientId) || baseIng;
-        console.log("targetIng before update:", targetIng);
+      } else if (item.action === "map") {
+        let targetId = item.targetIngredientId;
+        if (!targetId) {
+          const matchByName = ingredients.find(ing => (ing.name || "").toLowerCase().trim() === (name || "").toLowerCase().trim());
+          if (matchByName) {
+            targetId = matchByName.id;
+          } else {
+            // Cannot find map target, fallback to create
+            item.action = "create";
+            itemsToApply.push(item);
+            continue;
+          }
+        }
+
+        const baseIng = ingredients.find(ing => ing.id === targetId);
+        const targetIng = localIngredientsMap.get(targetId) || baseIng;
         
-        let finalPricePerGram = 0;
-        const finalWeightPerCase = item.parsedItem.weightPerCase !== undefined ? Number(item.parsedItem.weightPerCase) : targetIng?.weightPerCase;
-        const finalWeightPerCaseUnit = item.parsedItem.weightPerCaseUnit || targetIng?.weightPerCaseUnit || "lb";
-        const finalUsability = item.parsedItem.usabilityPercentage !== undefined ? Number(item.parsedItem.usabilityPercentage) : (targetIng?.usabilityPercentage !== undefined ? targetIng.usabilityPercentage : 100);
-        
-        finalPricePerGram = calculateIngredientUnitPrice({
+        // Infer weight specification from item name, target name, or parsed fields
+        const inferredSpec = extractWeightSpecFromName(name) || (targetIng ? extractWeightSpecFromName(targetIng.name) : null);
+        const finalWeightPerCase = item.parsedItem.weightPerCase !== undefined && Number(item.parsedItem.weightPerCase) > 0
+          ? Number(item.parsedItem.weightPerCase)
+          : (targetIng?.weightPerCase || inferredSpec?.weight);
+        const finalWeightPerCaseUnit = item.parsedItem.weightPerCaseUnit || targetIng?.weightPerCaseUnit || inferredSpec?.unit || "lb";
+        const finalUsability = item.parsedItem.usabilityPercentage !== undefined 
+          ? Number(item.parsedItem.usabilityPercentage) 
+          : (targetIng?.usabilityPercentage !== undefined ? targetIng.usabilityPercentage : 100);
+
+        // Keep target ingredient's established tracking unit so recipes and stock sheets remain consistent
+        const targetUnit = (targetIng?.unit || parsedUnit || "lb").toLowerCase().trim();
+        const incomingUnit = (parsedUnit || targetUnit).toLowerCase().trim();
+
+        // Calculate incoming stock in target ingredient's unit
+        let addedQtyInTargetUnit = coercedQty;
+        if (incomingUnit !== targetUnit) {
+          const incomingPoundInfo = calculatePoundData(
+            coercedQty,
+            incomingUnit,
+            finalWeightPerCase,
+            finalWeightPerCaseUnit,
+            targetIng?.pcsPerPound,
+            undefined,
+            name
+          );
+
+          if (["lb", "lbs", "pound", "pounds"].includes(targetUnit) && incomingPoundInfo.lbs > 0) {
+            addedQtyInTargetUnit = incomingPoundInfo.lbs;
+          } else if (["oz", "ounce", "ounces"].includes(targetUnit) && incomingPoundInfo.lbs > 0) {
+            addedQtyInTargetUnit = incomingPoundInfo.lbs * 16;
+          } else if (["kg", "kilogram", "kilograms"].includes(targetUnit) && incomingPoundInfo.lbs > 0) {
+            addedQtyInTargetUnit = incomingPoundInfo.lbs * 0.45359237;
+          } else if (["g", "gram", "grams"].includes(targetUnit) && incomingPoundInfo.lbs > 0) {
+            addedQtyInTargetUnit = incomingPoundInfo.lbs * 453.59237;
+          } else if (["case", "cases", "box", "boxes", "bag", "bags", "pack", "packs"].includes(targetUnit) && finalWeightPerCase && finalWeightPerCase > 0) {
+            const caseLbs = calculatePoundData(1, targetUnit, finalWeightPerCase, finalWeightPerCaseUnit).lbs;
+            if (caseLbs > 0 && incomingPoundInfo.lbs > 0) {
+              addedQtyInTargetUnit = incomingPoundInfo.lbs / caseLbs;
+            }
+          } else {
+            const gEq = getGramsOrMlEquivalent(coercedQty, incomingUnit);
+            if (gEq > 0) {
+              const converted = convertFromGrams(gEq, targetUnit);
+              if (converted > 0) addedQtyInTargetUnit = converted;
+            }
+          }
+        }
+
+        const currentStock = typeof targetIng?.inStock === "number" ? targetIng.inStock : 0;
+        // In Price Correction mode: PRESERVE ON-HAND STOCK COUNT (no stock inflation)
+        const newStock = isPriceCorrectionOnly ? currentStock : (currentStock + addedQtyInTargetUnit);
+
+        const newUnitPrice = addedQtyInTargetUnit > 0 ? (coercedPrice / addedQtyInTargetUnit) : (coercedQty > 0 ? coercedPrice / coercedQty : 0);
+
+        let finalPricePerGram = calculateIngredientUnitPrice({
           price: coercedPrice,
-          quantity: coercedQty,
-          unit: parsedUnit,
+          quantity: addedQtyInTargetUnit > 0 ? addedQtyInTargetUnit : coercedQty,
+          unit: targetIng?.unit || parsedUnit,
           weightPerCase: finalWeightPerCase,
           weightPerCaseUnit: finalWeightPerCaseUnit,
         });
@@ -1526,55 +1584,11 @@ export default function App() {
           finalPricePerGram = 0;
         }
 
-        let currentStock = targetIng?.inStock || 0;
-        let convertedCurrentStock = currentStock;
-
-        if (targetIng && targetIng.unit && parsedUnit && targetIng.unit.toLowerCase().trim() !== parsedUnit.toLowerCase().trim()) {
-          const currentLbs = calculatePoundData(
-            currentStock,
-            targetIng.unit,
-            targetIng.weightPerCase,
-            targetIng.weightPerCaseUnit,
-            targetIng.pcsPerPound,
-            targetIng.quantity
-          ).lbs;
-
-          const newUnitLower = parsedUnit.toLowerCase().trim();
-          if (["lb", "lbs", "pound", "pounds"].includes(newUnitLower)) {
-            convertedCurrentStock = currentLbs;
-          } else if (["oz", "ounce", "ounces"].includes(newUnitLower)) {
-            convertedCurrentStock = currentLbs * 16;
-          } else if (["g", "gram", "grams"].includes(newUnitLower)) {
-            convertedCurrentStock = currentLbs * 453.59237;
-          } else if (["kg", "kilogram", "kilograms"].includes(newUnitLower)) {
-            convertedCurrentStock = currentLbs * 0.45359237;
-          } else if (["case", "cases", "box", "boxes", "bag", "bags"].includes(newUnitLower) && finalWeightPerCase && finalWeightPerCase > 0) {
-            const newCaseLbs = calculatePoundData(1, newUnitLower, finalWeightPerCase, finalWeightPerCaseUnit).lbs;
-            if (newCaseLbs > 0) {
-              convertedCurrentStock = currentLbs / newCaseLbs;
-            }
-          }
-        }
-
-        // In Price Correction mode: PRESERVE ON-HAND STOCK COUNT (no stock inflation)
-        const newStock = isPriceCorrectionOnly ? currentStock : (convertedCurrentStock + coercedQty);
-        const newUnitPrice = coercedQty > 0 ? coercedPrice / coercedQty : 0;
-          
-        console.log("UPDATING MAP INGREDIENT!", {
-          targetIngredientId: item.targetIngredientId,
-          coercedQty,
-          coercedPrice,
-          newStock,
-          newUnitPrice,
-          parsedUnit,
-          isPriceCorrectionOnly
-        });
-        
         const updatePayload: any = {
           price: newUnitPrice,
           quantity: 1,
           inStock: newStock,
-          unit: parsedUnit,
+          unit: targetIng?.unit || parsedUnit, // Preserves the established unit
           pricePerGram: finalPricePerGram, // newest rate standard normalized
           source: isPriceCorrectionOnly
             ? `Price corrected via ${invoiceNumber ? '#' + invoiceNumber : ''} (${vendor || fileName || 'document'})`
@@ -1589,19 +1603,19 @@ export default function App() {
         };
 
         // Track in local map for subsequent iterations in this batch
-        localIngredientsMap.set(item.targetIngredientId, {
+        localIngredientsMap.set(targetId, {
           ...(targetIng || {}),
           ...updatePayload,
-          id: item.targetIngredientId,
+          id: targetId,
         });
 
         // Update package price and date of existing ingredient with normalized standard rates
         try {
-          await safeUpdateDoc("ingredients", item.targetIngredientId, updatePayload);
+          await safeUpdateDoc("ingredients", targetId, updatePayload);
         } catch (updErr) {
           console.warn("safeUpdateDoc failed, fallback to safeSetDoc:", updErr);
           try {
-            await safeSetDoc("ingredients", item.targetIngredientId, {
+            await safeSetDoc("ingredients", targetId, {
               ...updatePayload,
               name: targetIng?.name || name,
               ownerId: targetOwnerId,
@@ -1618,10 +1632,10 @@ export default function App() {
             const consumptionRecord: Omit<ConsumptionLog, "id"> = {
               date: consumptionDateIso,
               vendorName: cleanVendor,
-              ingredientId: item.targetIngredientId,
+              ingredientId: targetId,
               ingredientName: targetIng?.name || name,
-              quantity: -Math.abs(coercedQty), // Negative quantity represents addition / restock
-              unit: parsedUnit,
+              quantity: -Math.abs(addedQtyInTargetUnit), // Negative quantity represents addition / restock in target unit
+              unit: targetIng?.unit || parsedUnit,
               pricePerPack: newUnitPrice,
               totalCost: -Math.abs(coercedPrice), // Negative total cost represents inbound value
               recordedBy: invoiceRecordedBy,
@@ -2482,22 +2496,42 @@ export default function App() {
                   )}
 
                   {userRole !== "staff" && (
-                  <button
-                    onClick={() => {
-                      setActiveSection("collaborators");
-                      setMobileMenuOpen(false);
-                    }}
-                    className={`w-full text-left py-2.5 px-3 text-xs font-bold transition-all rounded-xl flex items-center justify-between cursor-pointer ${
-                      activeSection === "collaborators"
-                        ? "bg-blue-700 text-white border border-neutral-200"
-                        : "text-neutral-900/75 hover:bg-neutral-50 border border-transparent"
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <Users className="h-4 w-4" />
-                      <span>Collaborators & Workspaces</span>
-                    </div>
-                  </button>
+                    <>
+                      <button
+                        onClick={() => {
+                          setActiveSection("collaborators");
+                          setMobileMenuOpen(false);
+                        }}
+                        className={`w-full text-left py-2.5 px-3 text-xs font-bold transition-all rounded-xl flex items-center justify-between cursor-pointer ${
+                          activeSection === "collaborators"
+                            ? "bg-blue-700 text-white border border-neutral-200"
+                            : "text-neutral-900/75 hover:bg-neutral-50 border border-transparent"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <Users className="h-4 w-4" />
+                          <span>Collaborators & Workspaces</span>
+                        </div>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setActiveSection("system-architecture");
+                          setMobileMenuOpen(false);
+                        }}
+                        className={`w-full text-left py-2.5 px-3 text-xs font-bold transition-all rounded-xl flex items-center justify-between cursor-pointer ${
+                          activeSection === "system-architecture"
+                            ? "bg-indigo-700 text-white border border-neutral-200"
+                            : "text-neutral-900/75 hover:bg-neutral-50 border border-transparent"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <Database className="h-4 w-4 text-indigo-400" />
+                          <span>System Architecture</span>
+                        </div>
+                        <span className="text-[10px] bg-indigo-100 text-indigo-800 font-bold px-1.5 py-0.5 rounded">Blueprint</span>
+                      </button>
+                    </>
                   )}
 </nav>
 
@@ -2824,22 +2858,43 @@ export default function App() {
                 </button>
 
                 {userRole !== "staff" && (
-                <button
-                  onClick={() => setActiveSection("departments")}
-                  className={`w-full h-10 ${sidebarCollapsed ? "px-0 justify-center" : "px-3 justify-start"} text-[13px] font-medium transition-all rounded-lg flex items-center justify-between cursor-pointer ${
-                    activeSection === "departments"
-                      ? "bg-emerald-50 text-emerald-800"
-                      : "text-neutral-600 hover:bg-neutral-100/50 hover:text-neutral-900"
-                  }`}
-                >
-                  <div className="flex items-center gap-3 relative">
-                    <LayoutDashboard className={`h-4 w-4 shrink-0 ${activeSection === "departments" ? "text-emerald-600" : "text-neutral-500"}`} />
-                    {!sidebarCollapsed && <span>Departments</span>}
-                  </div>
-                  {!sidebarCollapsed && (
-                    <span className="bg-emerald-100 text-emerald-700 text-[10px] font-bold px-1.5 py-0.5 rounded-md">{resolvedDepts.length}</span>
-                  )}
-                </button>
+                  <>
+                    <button
+                      onClick={() => setActiveSection("departments")}
+                      className={`w-full h-10 ${sidebarCollapsed ? "px-0 justify-center" : "px-3 justify-start"} text-[13px] font-medium transition-all rounded-lg flex items-center justify-between cursor-pointer ${
+                        activeSection === "departments"
+                          ? "bg-emerald-50 text-emerald-800"
+                          : "text-neutral-600 hover:bg-neutral-100/50 hover:text-neutral-900"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 relative">
+                        <LayoutDashboard className={`h-4 w-4 shrink-0 ${activeSection === "departments" ? "text-emerald-600" : "text-neutral-500"}`} />
+                        {!sidebarCollapsed && <span>Departments</span>}
+                      </div>
+                      {!sidebarCollapsed && (
+                        <span className="bg-emerald-100 text-emerald-700 text-[10px] font-bold px-1.5 py-0.5 rounded-md">{resolvedDepts.length}</span>
+                      )}
+                    </button>
+
+                    <button
+                      onClick={() => setActiveSection("system-architecture")}
+                      className={`w-full h-10 ${sidebarCollapsed ? "px-0 justify-center" : "px-3 justify-start"} text-[13px] font-medium transition-all rounded-lg flex items-center justify-between cursor-pointer ${
+                        activeSection === "system-architecture"
+                          ? "bg-indigo-50 text-indigo-900 font-semibold"
+                          : "text-neutral-600 hover:bg-neutral-100/50 hover:text-neutral-900"
+                      }`}
+                      title="System Architecture Blueprint"
+                    >
+                      <div className="flex items-center gap-3 relative">
+                        {activeSection === "system-architecture" && !sidebarCollapsed && <div className="absolute -left-3 top-1/2 -translate-y-1/2 w-1 h-6 bg-indigo-600 rounded-r-full" />}
+                        <Database className={`h-4 w-4 shrink-0 ${activeSection === "system-architecture" ? "text-indigo-600" : "text-neutral-500"}`} />
+                        {!sidebarCollapsed && <span>System Architecture</span>}
+                      </div>
+                      {!sidebarCollapsed && (
+                        <span className="bg-indigo-100 text-indigo-700 text-[10px] font-bold px-1.5 py-0.5 rounded-md">Blueprint</span>
+                      )}
+                    </button>
+                  </>
                 )}
               </nav>
             </div>
@@ -3180,6 +3235,9 @@ export default function App() {
                   workspaceOwnerEmail={user?.email || null}
                   userRole={userRole}
                 />
+              )}
+              {activeSection === "system-architecture" && (
+                <SystemArchitectureView />
               )}
 
             </div>

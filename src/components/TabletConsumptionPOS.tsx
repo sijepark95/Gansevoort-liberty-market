@@ -10,19 +10,26 @@ import {
   CheckCircle, 
   Monitor, 
   Grid, 
-  PenTool, 
   ArrowLeft, 
   User, 
-  Eraser,
-  TrendingDown,
-  TrendingUp,
-  Plus,
-  PlusCircle,
-  ChevronDown,
-  Camera,
-  Eye,
-  EyeOff,
-  SlidersHorizontal
+  TrendingDown, 
+  TrendingUp, 
+  Plus, 
+  PlusCircle, 
+  ChevronDown, 
+  Camera, 
+  Eye, 
+  EyeOff, 
+  SlidersHorizontal,
+  Lock,
+  ShieldCheck,
+  UserCheck,
+  Delete,
+  Users,
+  KeyRound,
+  Trash2,
+  ListPlus,
+  ShoppingBag
 } from "lucide-react";
 import { motion } from "motion/react";
 import { db, safeAddDoc } from "../lib/firebase";
@@ -335,6 +342,505 @@ function getMultiUnitBreakdown(
   return results;
 }
 
+export interface ActiveOperator {
+  id?: string;
+  name: string;
+  role?: string;
+  dept?: string;
+  employeeCode?: string;
+  pin: string;
+}
+
+export function resolveEmployeePin(emp: Employee, index: number = 0): string {
+  if (emp.employeeCode) {
+    const digits = emp.employeeCode.replace(/\D/g, "");
+    if (digits.length >= 4) {
+      return digits.slice(-4);
+    } else if (digits.length > 0) {
+      return digits.padStart(4, "0");
+    }
+  }
+  return String(1001 + index);
+}
+
+interface TabletPinKeypadProps {
+  allStaff: Employee[];
+  user: any;
+  onLogin: (operator: ActiveOperator) => void;
+  onClose?: () => void;
+  isModal?: boolean;
+  logoutNotice?: string | null;
+  onClearLogoutNotice?: () => void;
+}
+
+function TabletPinKeypad({
+  allStaff,
+  user,
+  onLogin,
+  onClose,
+  isModal = false,
+  logoutNotice,
+  onClearLogoutNotice
+}: TabletPinKeypadProps) {
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [staffSearchQuery, setStaffSearchQuery] = useState("");
+
+  const filteredStaff = useMemo(() => {
+    if (!staffSearchQuery.trim()) return allStaff;
+    const q = staffSearchQuery.toLowerCase().trim();
+    return allStaff.filter((staff, idx) => {
+      const staffPin = resolveEmployeePin(staff, idx);
+      const name = (staff.name || "").toLowerCase();
+      const role = (staff.role || "").toLowerCase();
+      const dept = (staff.dept || "").toLowerCase();
+      const code = (staff.employeeCode || "").toLowerCase();
+      return name.includes(q) || role.includes(q) || dept.includes(q) || code.includes(q) || staffPin.includes(q);
+    });
+  }, [allStaff, staffSearchQuery]);
+
+  const handleClear = () => {
+    setPin("");
+    setError(null);
+  };
+
+  const handleBackspace = () => {
+    setPin(prev => prev.slice(0, -1));
+    setError(null);
+  };
+
+  const validateAndLogin = (enteredPin: string) => {
+    const cleanPin = enteredPin.trim();
+    if (!cleanPin) return;
+
+    // 1. Try matching with registered staff
+    let matchedEmp: Employee | null = null;
+    let matchedPin = cleanPin;
+
+    for (let i = 0; i < allStaff.length; i++) {
+      const emp = allStaff[i];
+      const derivedPin = resolveEmployeePin(emp, i);
+      if (derivedPin === cleanPin) {
+        matchedEmp = emp;
+        matchedPin = derivedPin;
+        break;
+      }
+      if (emp.employeeCode) {
+        const codeDigits = emp.employeeCode.replace(/\D/g, "");
+        if (codeDigits === cleanPin || codeDigits.padStart(4, "0") === cleanPin || cleanPin.replace(/^0+/, "") === codeDigits) {
+          matchedEmp = emp;
+          matchedPin = derivedPin;
+          break;
+        }
+        if (emp.employeeCode.toLowerCase().trim() === cleanPin.toLowerCase()) {
+          matchedEmp = emp;
+          matchedPin = derivedPin;
+          break;
+        }
+      }
+    }
+
+    // 2. Master fallback PIN (0000 or 1234)
+    if (!matchedEmp && (cleanPin === "0000" || cleanPin === "1234")) {
+      const manager = allStaff.find(e => (e.role || "").toLowerCase().includes("manager")) || allStaff[0];
+      if (manager) {
+        matchedEmp = manager;
+        matchedPin = resolveEmployeePin(manager, 0);
+      } else {
+        onLogin({
+          name: user?.displayName || "Restaurant Manager",
+          role: "General Manager",
+          dept: "Management",
+          employeeCode: "MGR-001",
+          pin: cleanPin
+        });
+        return;
+      }
+    }
+
+    if (matchedEmp) {
+      onLogin({
+        id: matchedEmp.id,
+        name: matchedEmp.name,
+        role: matchedEmp.role,
+        dept: matchedEmp.dept,
+        employeeCode: matchedEmp.employeeCode,
+        pin: matchedPin
+      });
+    } else {
+      setError("Invalid 4-digit staff code. Please try again.");
+      setPin("");
+      setTimeout(() => setError(null), 3000);
+    }
+  };
+
+  const handleKeyPress = (val: string) => {
+    if (val === "clear") {
+      handleClear();
+    } else if (val === "backspace") {
+      handleBackspace();
+    } else {
+      if (pin.length < 4) {
+        const next = pin + val;
+        setPin(next);
+        setError(null);
+        if (next.length === 4) {
+          setTimeout(() => validateAndLogin(next), 120);
+        }
+      }
+    }
+  };
+
+  // Keyboard shortcut listener
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Do not intercept if user is typing in the PIN search bar or any other text field
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+      if (e.key >= "0" && e.key <= "9") {
+        handleKeyPress(e.key);
+      } else if (e.key === "Backspace") {
+        handleBackspace();
+      } else if (e.key === "Escape" && onClose) {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [pin, onClose]);
+
+  const keypadRows = [
+    ["1", "2", "3"],
+    ["4", "5", "6"],
+    ["7", "8", "9"],
+    ["clear", "0", "backspace"]
+  ];
+
+  const terminalContent = (
+    <div className="w-full max-w-4xl bg-neutral-900 border border-neutral-800 rounded-3xl p-5 sm:p-7 md:p-8 shadow-2xl relative overflow-hidden text-left">
+      {/* Glow */}
+      <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none"></div>
+      <div className="absolute bottom-0 left-0 w-64 h-64 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none"></div>
+
+      {/* Header */}
+      <div className="flex items-center justify-between pb-5 border-b border-neutral-800 mb-6">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
+            <Lock className="h-5 w-5" />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold text-white font-mono tracking-tight flex items-center gap-2">
+              <span>{isModal ? "Switch Staff Operator" : "Tablet POS Terminal"}</span>
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+            </h2>
+            <p className="text-xs text-neutral-400">
+              {isModal ? "Authenticate another staff operator" : "Staff Code 4-Digit Login • Audit Tracking"}
+            </p>
+          </div>
+        </div>
+
+        {onClose && (
+          <button
+            onClick={onClose}
+            className="p-2 text-neutral-400 hover:text-white hover:bg-neutral-800 rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-bold"
+            title="Exit"
+          >
+            <X className="h-5 w-5" />
+            <span className="hidden sm:inline">{isModal ? "Cancel" : "Exit to Inventory"}</span>
+          </button>
+        )}
+      </div>
+
+      {/* Logout Notice Banner */}
+      {logoutNotice && (
+        <div className="mb-5 p-3.5 sm:p-4 bg-emerald-950/80 border border-emerald-500/70 rounded-2xl flex items-center justify-between text-xs text-emerald-200 shadow-xl gap-3">
+          <div className="flex items-center gap-2.5">
+            <CheckCircle className="h-5 w-5 text-emerald-400 shrink-0" />
+            <div>
+              <p className="font-bold text-white text-xs sm:text-sm">{logoutNotice}</p>
+              <p className="text-[11px] text-emerald-300 mt-0.5">Operator logged out. Enter 4-digit PIN code to begin next session.</p>
+            </div>
+          </div>
+          {onClearLogoutNotice && (
+            <button
+              onClick={onClearLogoutNotice}
+              className="text-emerald-400 hover:text-white p-1 rounded-lg cursor-pointer shrink-0"
+              title="Dismiss"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* 2-Column Responsive Grid on Tablet / Desktop */}
+      <div className="grid grid-cols-1 md:grid-cols-12 gap-6 lg:gap-8 items-stretch">
+        {/* Left Column: Keypad & Input (7 cols on md) */}
+        <div className="md:col-span-7 flex flex-col justify-between space-y-4 sm:space-y-5">
+          {/* PIN Indicator Box */}
+          <div className="text-center bg-neutral-950/70 border border-neutral-800/80 rounded-2xl p-4 sm:p-5">
+            <p className="text-xs text-neutral-400 font-medium mb-3">
+              Enter 4-digit staff code to authenticate operator
+            </p>
+
+            {/* 4 Digit Boxes */}
+            <div className="flex justify-center items-center gap-3 sm:gap-4 mb-2">
+              {[0, 1, 2, 3].map((idx) => {
+                const isFilled = pin.length > idx;
+                const isCurrent = pin.length === idx;
+                return (
+                  <div
+                    key={idx}
+                    className={`w-12 h-14 sm:w-14 sm:h-16 rounded-xl flex items-center justify-center font-mono font-bold text-2xl transition-all duration-150 ${
+                      isFilled
+                        ? "bg-emerald-950/80 border-2 border-emerald-400 text-emerald-300 shadow-lg shadow-emerald-500/20 scale-105"
+                        : isCurrent
+                          ? "bg-neutral-900 border-2 border-emerald-500/60 ring-2 ring-emerald-500/20 text-neutral-500"
+                          : "bg-neutral-900/60 border border-neutral-800 text-neutral-600"
+                    }`}
+                  >
+                    {isFilled ? "●" : isCurrent ? <span className="w-2 h-0.5 bg-emerald-400 animate-pulse"></span> : ""}
+                  </div>
+                );
+              })}
+            </div>
+
+            {error ? (
+              <p className="text-xs font-bold text-red-400 bg-red-950/70 border border-red-800/80 px-3 py-1.5 rounded-lg mt-3 inline-block">
+                {error}
+              </p>
+            ) : (
+              <p className="text-[11px] text-neutral-500 font-mono mt-2">
+                {pin.length} / 4 digits entered
+              </p>
+            )}
+          </div>
+
+          {/* Keypad */}
+          <div className="grid grid-cols-3 gap-2 sm:gap-2.5">
+            {keypadRows.map((row, rowIdx) => (
+              <React.Fragment key={rowIdx}>
+                {row.map((btn) => {
+                  if (btn === "clear") {
+                    return (
+                      <button
+                        key={btn}
+                        type="button"
+                        onClick={handleClear}
+                        className="h-13 sm:h-14 rounded-2xl bg-neutral-800/60 hover:bg-neutral-800 text-neutral-400 hover:text-neutral-200 text-xs font-bold uppercase tracking-wider transition-all active:scale-95 border border-neutral-700/60 flex items-center justify-center cursor-pointer select-none"
+                      >
+                        Clear
+                      </button>
+                    );
+                  }
+                  if (btn === "backspace") {
+                    return (
+                      <button
+                        key={btn}
+                        type="button"
+                        onClick={handleBackspace}
+                        className="h-13 sm:h-14 rounded-2xl bg-neutral-800/60 hover:bg-neutral-800 text-neutral-400 hover:text-neutral-200 transition-all active:scale-95 border border-neutral-700/60 flex items-center justify-center cursor-pointer select-none"
+                        title="Backspace"
+                      >
+                        <Delete className="h-5 w-5" />
+                      </button>
+                    );
+                  }
+                  return (
+                    <button
+                      key={btn}
+                      type="button"
+                      onClick={() => handleKeyPress(btn)}
+                      className="h-13 sm:h-14 rounded-2xl bg-neutral-800 hover:bg-neutral-750 text-white font-mono font-bold text-2xl transition-all active:scale-95 border border-neutral-700 hover:border-emerald-500/50 shadow-sm flex items-center justify-center cursor-pointer select-none active:bg-emerald-600/30"
+                    >
+                      {btn}
+                    </button>
+                  );
+                })}
+              </React.Fragment>
+            ))}
+          </div>
+
+          {/* Manager quick override hint */}
+          <div className="flex items-center justify-between text-[11px] text-neutral-500 pt-1">
+            <span>Manager Override:</span>
+            <button
+              type="button"
+              onClick={() => validateAndLogin("0000")}
+              className="font-mono font-bold text-emerald-400 hover:text-emerald-300 hover:underline cursor-pointer bg-neutral-800/60 border border-neutral-700 px-2 py-0.5 rounded-lg"
+            >
+              Use PIN 0000
+            </button>
+          </div>
+        </div>
+
+        {/* Right Column: Quick Staff Select & PIN Finder (5 cols on md) */}
+        <div className="md:col-span-5 flex flex-col border-t md:border-t-0 md:border-l border-neutral-800 pt-5 md:pt-0 md:pl-6 lg:pl-8">
+          <div className="flex items-center justify-between mb-2.5 shrink-0">
+            <div className="flex items-center gap-1.5">
+              <KeyRound className="h-4 w-4 text-emerald-400" />
+              <span className="text-xs font-bold text-neutral-200 uppercase tracking-wider font-mono">
+                Staff PIN Finder
+              </span>
+            </div>
+            <span className="text-[10px] text-emerald-400 font-mono font-bold">
+              {filteredStaff.length} of {allStaff.length} Staff
+            </span>
+          </div>
+
+          {/* Search Bar for PIN Code and Name */}
+          <div className="relative mb-3 shrink-0">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-neutral-400 pointer-events-none" />
+            <input
+              type="text"
+              value={staffSearchQuery}
+              onChange={(e) => setStaffSearchQuery(e.target.value)}
+              placeholder="Search your name or code to find PIN..."
+              className="w-full pl-9 pr-8 py-2 bg-neutral-950/80 border border-neutral-700/80 hover:border-neutral-600 focus:border-emerald-500 rounded-xl text-xs text-white placeholder-neutral-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/50 transition-all font-sans"
+            />
+            {staffSearchQuery && (
+              <button
+                type="button"
+                onClick={() => setStaffSearchQuery("")}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-white p-0.5 rounded cursor-pointer"
+                title="Clear search"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Search Result Hint Banner if query is active */}
+          {staffSearchQuery && (
+            <div className="mb-2 px-2.5 py-1 rounded-lg bg-emerald-950/60 border border-emerald-800/60 text-[11px] text-emerald-300 flex items-center justify-between shrink-0">
+              <span className="truncate">Matching for: "{staffSearchQuery}"</span>
+              <span className="font-bold font-mono shrink-0 ml-1">{filteredStaff.length} found</span>
+            </div>
+          )}
+
+          <div className="flex-1 max-h-[250px] sm:max-h-[290px] md:max-h-[330px] overflow-y-auto space-y-2 pr-1">
+            {filteredStaff.length > 0 ? (
+              filteredStaff.map((staff, idx) => {
+                const staffPin = resolveEmployeePin(staff, allStaff.indexOf(staff) >= 0 ? allStaff.indexOf(staff) : idx);
+                return (
+                  <button
+                    key={staff.id || staff.name + idx}
+                    type="button"
+                    onClick={() => {
+                      onLogin({
+                        id: staff.id,
+                        name: staff.name,
+                        role: staff.role,
+                        dept: staff.dept,
+                        employeeCode: staff.employeeCode,
+                        pin: staffPin
+                      });
+                    }}
+                    className="w-full p-2.5 bg-neutral-800/80 hover:bg-emerald-950/70 border border-neutral-700/80 hover:border-emerald-500/60 rounded-xl transition-all flex items-center justify-between cursor-pointer group text-left shadow-sm active:scale-[0.98]"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-8 h-8 rounded-xl bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 font-bold text-xs flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                        {(staff.name || "?").charAt(0).toUpperCase()}
+                      </div>
+                      <div className="min-w-0 truncate">
+                        <div className="text-xs font-bold text-neutral-200 group-hover:text-emerald-300 transition-colors truncate">
+                          {staff.name}
+                        </div>
+                        <div className="text-[10px] text-neutral-400 truncate">
+                          {staff.role || "Staff"} {staff.dept ? `• ${staff.dept}` : ""}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                      <span className="text-xs font-mono font-bold bg-neutral-950 border border-neutral-700 group-hover:border-emerald-400/80 px-2.5 py-1 rounded-lg text-emerald-400 shadow-xs">
+                        PIN: {staffPin}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })
+            ) : allStaff.length > 0 ? (
+              <div className="p-4 bg-neutral-950/60 border border-neutral-800 rounded-xl text-center">
+                <p className="text-xs text-neutral-400 font-medium">
+                  No staff member found matching "{staffSearchQuery}"
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setStaffSearchQuery("")}
+                  className="mt-2 text-xs font-bold text-emerald-400 hover:underline cursor-pointer"
+                >
+                  Clear search filter
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  onLogin({
+                    name: user?.displayName || "Restaurant Manager",
+                    role: "General Manager",
+                    dept: "Management",
+                    employeeCode: "MGR-001",
+                    pin: "0000"
+                  });
+                }}
+                className="w-full p-3 bg-neutral-800 hover:bg-emerald-950/70 border border-neutral-700 rounded-xl transition-all flex items-center justify-between cursor-pointer text-left"
+              >
+                <div>
+                  <div className="text-xs font-bold text-neutral-200">
+                    {user?.displayName || "Workspace Owner"}
+                  </div>
+                  <div className="text-[10px] text-neutral-400">Manager Default Login</div>
+                </div>
+                <span className="text-[11px] font-mono font-bold bg-neutral-900 px-2 py-0.5 rounded-lg text-emerald-400 border border-neutral-700">
+                  PIN: 0000
+                </span>
+              </button>
+            )}
+          </div>
+
+          <div className="mt-4 pt-3 border-t border-neutral-800 text-[10px] text-neutral-400 flex items-center gap-1.5 shrink-0">
+            <ShieldCheck className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+            <span>Digital operator signature attached to each ledger record.</span>
+          </div>
+        </div>
+      </div>
+
+      {!isModal && onClose && (
+        <div className="mt-6 pt-4 border-t border-neutral-800/80 flex items-center justify-between">
+          <span className="text-[11px] text-neutral-500 font-mono">
+            Restaurant POS Client • v2.4
+          </span>
+          <button
+            onClick={onClose}
+            className="text-xs font-bold text-neutral-400 hover:text-white transition-colors cursor-pointer py-1 px-3 rounded-lg hover:bg-neutral-800"
+          >
+            ← Exit Tablet POS to Inventory
+          </button>
+        </div>
+      )}
+    </div>
+  );
+
+  if (isModal) {
+    return terminalContent;
+  }
+
+  return (
+    <div className="w-full min-h-[100dvh] bg-neutral-950 flex flex-col justify-start md:justify-center items-center p-3 sm:p-6 md:p-8 font-sans overflow-y-auto">
+      {terminalContent}
+    </div>
+  );
+}
+
+export interface BatchItem {
+  ingredient: Ingredient;
+  quantity: number;
+  unit: string;
+}
+
 interface TabletConsumptionPOSProps {
   ingredients: Ingredient[];
   vendors?: Vendor[];
@@ -474,6 +980,8 @@ export default function TabletConsumptionPOS({
   const [selectedIngredient, setSelectedIngredient] = useState<Ingredient | null>(null);
   const [inputQty, setInputQty] = useState("");
   const [selectedUnit, setSelectedUnit] = useState("pound");
+  const [batchItems, setBatchItems] = useState<BatchItem[]>([]);
+  const [logoutNotice, setLogoutNotice] = useState<string | null>(null);
   const [showHideUnitSelector, setShowHideUnitSelector] = useState(false);
   const [hiddenUnits, setHiddenUnits] = useState<string[]>(() => {
     try {
@@ -488,12 +996,11 @@ export default function TabletConsumptionPOS({
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{type: "success" | "error", text: string} | null>(null);
 
-  // Sign-off signature and operator name states
+  // Active logged-in operator state via 4-digit staff code
+  const [activeOperator, setActiveOperator] = useState<ActiveOperator | null>(null);
+  const [showSwitchOperatorModal, setShowSwitchOperatorModal] = useState(false);
   const [showSignaturePage, setShowSignaturePage] = useState(false);
-  const [operatorNameInput, setOperatorNameInput] = useState("");
   const [fetchedEmployees, setFetchedEmployees] = useState<Employee[]>([]);
-  const [showStaffDropdown, setShowStaffDropdown] = useState(false);
-  const staffSearchRef = useRef<HTMLDivElement | null>(null);
 
   // Real-time listener for staff from firestore as fallback
   useEffect(() => {
@@ -522,38 +1029,6 @@ export default function TabletConsumptionPOS({
     if (employees && employees.length > 0) return employees;
     return fetchedEmployees;
   }, [employees, fetchedEmployees]);
-
-  // Filtered staff list based on operatorNameInput
-  const filteredStaff = useMemo(() => {
-    if (!operatorNameInput.trim()) return allStaff;
-    const q = operatorNameInput.toLowerCase().trim();
-    return allStaff.filter(emp => 
-      (emp.name || "").toLowerCase().includes(q) ||
-      (emp.role || "").toLowerCase().includes(q) ||
-      (emp.dept || "").toLowerCase().includes(q) ||
-      (emp.employeeCode || "").toLowerCase().includes(q)
-    );
-  }, [allStaff, operatorNameInput]);
-
-  // Check if current input matches a registered staff member exactly
-  const matchedStaff = useMemo(() => {
-    if (!operatorNameInput.trim()) return null;
-    return allStaff.find(emp => (emp.name || "").toLowerCase().trim() === operatorNameInput.toLowerCase().trim());
-  }, [allStaff, operatorNameInput]);
-
-  // Close staff dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (staffSearchRef.current && !staffSearchRef.current.contains(event.target as Node)) {
-        setShowStaffDropdown(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [isDrawing, setIsDrawing] = useState(false);
 
   // Add New Item form states
   const [newItemName, setNewItemName] = useState("");
@@ -589,76 +1064,6 @@ export default function TabletConsumptionPOS({
     return Array.from(list).sort((a, b) => a.localeCompare(b));
   }, [vendors]);
 
-  // Drawing Canvas logic
-  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    ctx.lineWidth = 3;
-    ctx.lineCap = "round";
-    ctx.strokeStyle = "#10b981"; // Emerald line color
-
-    const rect = canvas.getBoundingClientRect();
-    let clientX, clientY;
-    if ("touches" in e) {
-      if (e.touches.length === 0) return;
-      clientX = e.touches[0].clientX;
-      clientY = e.touches[0].clientY;
-    } else {
-      clientX = e.clientX;
-      clientY = e.clientY;
-    }
-
-    const x = ((clientX - rect.left) / rect.width) * canvas.width;
-    const y = ((clientY - rect.top) / rect.height) * canvas.height;
-
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    setIsDrawing(true);
-  };
-
-  const draw = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
-    if (!isDrawing) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const rect = canvas.getBoundingClientRect();
-    let clientX, clientY;
-    if ("touches" in e) {
-      if (e.touches.length === 0) return;
-      clientX = e.touches[0].clientX;
-      clientY = e.touches[0].clientY;
-    } else {
-      clientX = e.clientX;
-      clientY = e.clientY;
-    }
-
-    const x = ((clientX - rect.left) / rect.width) * canvas.width;
-    const y = ((clientY - rect.top) / rect.height) * canvas.height;
-
-    ctx.lineTo(x, y);
-    ctx.stroke();
-    if ("touches" in e) {
-      e.preventDefault();
-    }
-  };
-
-  const stopDrawing = () => {
-    setIsDrawing(false);
-  };
-
-  const clearCanvas = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-  };
-
   // Group locations
   const locations = useMemo(() => {
     const locs = new Set<string>();
@@ -679,13 +1084,25 @@ export default function TabletConsumptionPOS({
     return ["All Categories", ...Array.from(cats).sort()];
   }, [ingredients]);
 
-  // Adaptive unit options based on selected ingredient
+  // Adaptive unit options based on selected ingredient - always includes pound (lb) and piece (pc)
   const allAvailableUnits = useMemo(() => {
-    if (!selectedIngredient) return ["lb"];
+    if (!selectedIngredient) return ["lb", "pc"];
     const nativeUnit = selectedIngredient.unit || "lb";
 
     const unitsSet = new Set<string>();
     unitsSet.add(nativeUnit); // Always include native unit first
+
+    // Always ensure pound and pc options are available for fast selection
+    const cleanNative = nativeUnit.toLowerCase().trim();
+    const isWeightNative = ["lb", "lbs", "pound", "pounds", "kg", "g", "oz"].includes(cleanNative);
+    const isCountNative = ["pc", "pcs", "piece", "pieces", "ea", "each", "count", "ct"].includes(cleanNative);
+
+    if (!isWeightNative) {
+      unitsSet.add("lb");
+    }
+    if (!isCountNative) {
+      unitsSet.add("pc");
+    }
 
     if (selectedIngredient.packagingUnit && selectedIngredient.pcsPerPound && selectedIngredient.pcsPerPound > 0) {
       unitsSet.add(selectedIngredient.packagingUnit);
@@ -727,10 +1144,15 @@ export default function TabletConsumptionPOS({
     } catch {}
   };
 
-  // Reset unit when ingredient changes
+  // Reset unit when ingredient changes (unless already in batch with a chosen unit)
   useEffect(() => {
     if (selectedIngredient) {
-      const nativeUnit = selectedIngredient.unit || "lbs";
+      const inBatch = batchItems.find(b => b.ingredient.id === selectedIngredient.id);
+      if (inBatch) {
+        setSelectedUnit(inBatch.unit);
+        return;
+      }
+      const nativeUnit = selectedIngredient.unit || "lb";
       if (!hiddenUnits.some(hu => hu.toLowerCase() === nativeUnit.toLowerCase())) {
         setSelectedUnit(nativeUnit);
       } else if (visibleUnits.length > 0) {
@@ -739,7 +1161,7 @@ export default function TabletConsumptionPOS({
         setSelectedUnit(nativeUnit);
       }
     }
-  }, [selectedIngredient]);
+  }, [selectedIngredient?.id]);
 
   // Adjust unit if posMode changes or if the currently selected unit was hidden
   useEffect(() => {
@@ -808,18 +1230,84 @@ export default function TabletConsumptionPOS({
     return baseDisplay;
   };
 
-  const handleNumClick = (val: string) => {
-    if (val === "C") {
-      setInputQty("");
-    } else if (val === ".") {
-      if (!inputQty.includes(".")) setInputQty(inputQty + ".");
-    } else if (val === "DEL") {
-      setInputQty(inputQty.slice(0, -1));
+  // Helper to sync quantity updates with batch items
+  const updateQtyValue = (nextQty: string, customUnit?: string) => {
+    if (!selectedIngredient) return;
+    setInputQty(nextQty);
+    const unitToUse = customUnit || selectedUnit;
+    const num = parseFloat(nextQty);
+    if (!isNaN(num) && num > 0) {
+      // Chosen when the user types its pound or pc / quantity
+      setBatchItems(prev => {
+        const idx = prev.findIndex(b => b.ingredient.id === selectedIngredient.id);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = {
+            ingredient: selectedIngredient,
+            quantity: num,
+            unit: unitToUse
+          };
+          return next;
+        } else {
+          return [...prev, {
+            ingredient: selectedIngredient,
+            quantity: num,
+            unit: unitToUse
+          }];
+        }
+      });
     } else {
-      if (inputQty === "0") setInputQty(val);
-      else setInputQty(inputQty + val);
+      // If quantity is cleared or zero, remove from batchItems
+      setBatchItems(prev => prev.filter(b => b.ingredient.id !== selectedIngredient.id));
     }
   };
+
+  const handleNumClick = (val: string) => {
+    if (!selectedIngredient) return;
+    let nextQty = inputQty;
+    if (val === "C") {
+      nextQty = "";
+    } else if (val === ".") {
+      if (!inputQty.includes(".")) {
+        nextQty = inputQty === "" ? "0." : inputQty + ".";
+      }
+    } else if (val === "DEL") {
+      nextQty = inputQty.slice(0, -1);
+    } else {
+      if (inputQty === "0") nextQty = val;
+      else nextQty = inputQty + val;
+    }
+    updateQtyValue(nextQty);
+  };
+
+  // Keyboard support: when an ingredient is selected, user can type quantity directly on keyboard
+  useEffect(() => {
+    if (!activeOperator || showSignaturePage || posMode === "add-item") return;
+
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      // If user is typing in a search bar, modal input, or other text fields, don't intercept
+      const target = e.target as HTMLElement;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT")) {
+        return;
+      }
+
+      if (!selectedIngredient) return;
+
+      if ((e.key >= "0" && e.key <= "9") || e.key === ".") {
+        e.preventDefault();
+        handleNumClick(e.key);
+      } else if (e.key === "Backspace" || e.key === "Delete") {
+        e.preventDefault();
+        handleNumClick("DEL");
+      } else if (e.key.toLowerCase() === "c" || e.key === "Escape") {
+        e.preventDefault();
+        handleNumClick("C");
+      }
+    };
+
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown);
+  }, [activeOperator, showSignaturePage, posMode, selectedIngredient, inputQty, selectedUnit]);
 
   // Add Brand-New Item catalog submit
   const handleAddNewItemSubmit = async (e: React.FormEvent) => {
@@ -881,158 +1369,315 @@ export default function TabletConsumptionPOS({
     }
   };
 
-  // Handle inventory change submission (with signature audit log)
-  const handleSave = async (sigName: string, sigBase64: string) => {
-    if (!workspaceOwnerId) return;
-    if (!selectedIngredient) {
-      setMessage({ type: "error", text: "Select an item first." });
-      return;
-    }
-    const qtyNum = parseFloat(inputQty);
-    if (isNaN(qtyNum) || qtyNum <= 0) {
-      setMessage({ type: "error", text: "Enter a valid quantity." });
-      return;
-    }
+  // Helper to calculate stock impact and cost for a batch item
+  const calculateItemMetrics = (item: BatchItem, isDeductMode: boolean) => {
+    const ing = item.ingredient;
+    const qty = item.quantity;
+    const unit = item.unit;
 
-    // Calculation logic
-    const equivalentQty = convertInputToNativeQty(qtyNum, selectedUnit, selectedIngredient);
-    const cleanNative = (selectedIngredient.unit || "lbs").toLowerCase().trim();
+    const equivalentQty = convertInputToNativeQty(qty, unit, ing);
+    const cleanNative = (ing.unit || "lbs").toLowerCase().trim();
     const isLb = ["lb", "lbs", "pound", "pounds"].includes(cleanNative);
 
-    const packagesToAdjust = equivalentQty;
     let displayCost = 0;
-
-    if (selectedIngredient.pricePerGram) {
+    if (ing.pricePerGram) {
       const gramsAmt = isLb ? equivalentQty * 453.59237 : equivalentQty;
-      displayCost = gramsAmt * selectedIngredient.pricePerGram;
-    } else if (isLb && selectedIngredient.quantity) {
-      displayCost = (equivalentQty / selectedIngredient.quantity) * selectedIngredient.price;
+      displayCost = gramsAmt * ing.pricePerGram;
+    } else if (isLb && ing.quantity) {
+      displayCost = (equivalentQty / ing.quantity) * ing.price;
     } else {
-      displayCost = (equivalentQty / (selectedIngredient.quantity || 1)) * selectedIngredient.price;
+      displayCost = (equivalentQty / (ing.quantity || 1)) * ing.price;
     }
 
-    const currentStock = selectedIngredient.inStock !== undefined ? selectedIngredient.inStock : 0;
-    
-    setSubmitting(true);
-    setMessage(null);
+    const currentStock = ing.inStock !== undefined ? ing.inStock : 0;
+    const stockAfter = isDeductMode
+      ? Math.max(0, parseFloat((currentStock - equivalentQty).toFixed(4)))
+      : parseFloat((currentStock + equivalentQty).toFixed(4));
 
-    const finalDepartment = department;
+    const remainingUnitsBreakdown = getMultiUnitBreakdown(stockAfter, ing);
+    const currentUnitsBreakdown = getMultiUnitBreakdown(currentStock, ing);
+
+    return {
+      equivalentQty,
+      displayCost,
+      currentStock,
+      stockAfter,
+      remainingUnitsBreakdown,
+      currentUnitsBreakdown
+    };
+  };
+
+  // Add / Update item in batch
+  const handleAddOrUpdateBatch = () => {
+    if (!selectedIngredient) return;
+    const qtyNum = parseFloat(inputQty);
+    if (isNaN(qtyNum) || qtyNum <= 0) {
+      setMessage({ type: "error", text: "Please enter a valid quantity greater than 0." });
+      return;
+    }
+    if (!department && posMode === "deduct") {
+      setMessage({ type: "error", text: "Please select a department first." });
+      setShowDeptModal(true);
+      return;
+    }
+
+    setBatchItems(prev => {
+      const idx = prev.findIndex(b => b.ingredient.id === selectedIngredient.id);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = {
+          ingredient: selectedIngredient,
+          quantity: qtyNum,
+          unit: selectedUnit
+        };
+        return next;
+      } else {
+        return [...prev, {
+          ingredient: selectedIngredient,
+          quantity: qtyNum,
+          unit: selectedUnit
+        }];
+      }
+    });
+
+    setMessage({
+      type: "success",
+      text: `✓ Added ${qtyNum} ${selectedUnit} of ${selectedIngredient.name} to batch.`
+    });
+    setTimeout(() => setMessage(null), 2500);
+  };
+
+  // Remove single item from batch
+  const handleRemoveBatchItem = (ingId: string) => {
+    setBatchItems(prev => prev.filter(b => b.ingredient.id !== ingId));
+    if (selectedIngredient?.id === ingId) {
+      setSelectedIngredient(null);
+      setInputQty("");
+    }
+  };
+
+  // Clear entire batch
+  const handleClearBatch = () => {
+    setBatchItems([]);
+    setSelectedIngredient(null);
+    setInputQty("");
+  };
+
+  // Change unit and sync with batch if currently chosen
+  const handleSelectUnit = (unit: string) => {
+    setSelectedUnit(unit);
+    if (selectedIngredient) {
+      const num = parseFloat(inputQty);
+      if (!isNaN(num) && num > 0) {
+        setBatchItems(prev => {
+          const idx = prev.findIndex(b => b.ingredient.id === selectedIngredient.id);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = {
+              ...next[idx],
+              unit: unit
+            };
+            return next;
+          }
+          return prev;
+        });
+      }
+    }
+  };
+
+  // Select card from catalog grid:
+  // - Clicking an ingredient that is ALREADY IN THE BATCH or CURRENTLY SELECTED cancels it!
+  // - Fresh ingredient starts with empty quantity so it is only chosen when user types pound or pc
+  const handleSelectCard = (ing: Ingredient) => {
+    const isCurrentlySelected = selectedIngredient?.id === ing.id;
+    const itemInBatch = batchItems.find(b => b.ingredient.id === ing.id);
+
+    // If clicking an ingredient that is ALREADY IN THE BATCH or CURRENTLY SELECTED -> CANCEL IT!
+    if (isCurrentlySelected || itemInBatch) {
+      setBatchItems(prev => prev.filter(b => b.ingredient.id !== ing.id));
+      if (isCurrentlySelected) {
+        setSelectedIngredient(null);
+        setInputQty("");
+      }
+      setMessage({
+        type: "success",
+        text: `✓ Cancelled ${getIngredientDisplayName(ing)}.`
+      });
+      setTimeout(() => setMessage(null), 1800);
+      return;
+    }
+
+    // Fresh selection: not in batch and not selected
+    setSelectedIngredient(ing);
+    setInputQty(""); // Start EMPTY so it is ONLY chosen when the user types pound or pc!
+    const nativeUnit = ing.unit || "lb";
+    if (!hiddenUnits.some(hu => hu.toLowerCase() === nativeUnit.toLowerCase())) {
+      setSelectedUnit(nativeUnit);
+    } else if (visibleUnits.length > 0) {
+      setSelectedUnit(visibleUnits[0]);
+    } else {
+      setSelectedUnit(nativeUnit);
+    }
+
+    if (!department && posMode === "deduct") {
+      setShowDeptModal(true);
+    }
+  };
+
+  // Remove single item from batch while in Review screen (infallible id or index matching)
+  const handleRemoveReviewItem = (ingId?: string, itemIndex?: number) => {
+    if (ingId && selectedIngredient?.id === ingId) {
+      setSelectedIngredient(null);
+      setInputQty("");
+    }
+    setBatchItems(prev => {
+      const next = prev.filter((b, i) => {
+        if (itemIndex !== undefined && i === itemIndex) return false;
+        if (ingId && b.ingredient.id === ingId) return false;
+        return true;
+      });
+      if (next.length === 0) {
+        setShowSignaturePage(false);
+      }
+      return next;
+    });
+  };
+
+  // Proceed to review
+  const handleProceedToReview = () => {
+    let finalBatch = [...batchItems];
+    if (selectedIngredient) {
+      const q = parseFloat(inputQty);
+      if (!isNaN(q) && q > 0) {
+        const idx = finalBatch.findIndex(b => b.ingredient.id === selectedIngredient.id);
+        if (idx >= 0) {
+          finalBatch[idx] = {
+            ingredient: selectedIngredient,
+            quantity: q,
+            unit: selectedUnit
+          };
+        } else {
+          finalBatch.push({
+            ingredient: selectedIngredient,
+            quantity: q,
+            unit: selectedUnit
+          });
+        }
+        setBatchItems(finalBatch);
+      }
+      // Reset active selection so batchItems is the single source of truth in review
+      setSelectedIngredient(null);
+      setInputQty("");
+    }
+
+    if (finalBatch.length === 0) {
+      setMessage({ type: "error", text: "Please select an ingredient and enter its quantity to record." });
+      return;
+    }
+
+    if (!department && posMode === "deduct") {
+      setMessage({ type: "error", text: "Please select a department first." });
+      setShowDeptModal(true);
+      return;
+    }
+
+    setShowSignaturePage(true);
+  };
+
+  // Handle inventory change submission (with signature audit log and automatic operator logout)
+  const handleConfirmBatchSignOff = async (itemsToSave: BatchItem[]) => {
+    if (!workspaceOwnerId) return;
+    if (itemsToSave.length === 0) return;
+
     const isDeduct = posMode === "deduct";
+    const finalDepartment = department;
 
     if (!finalDepartment && isDeduct) {
       setMessage({ type: "error", text: "Please select a department." });
-      setSubmitting(false);
+      setShowDeptModal(true);
       return;
     }
+
+    setSubmitting(true);
+    setMessage(null);
+
+    const opName = activeOperator?.name || "Staff Operator";
+    const digitalAuth = "PIN_VERIFIED:" + (activeOperator?.employeeCode || activeOperator?.pin || "POS");
 
     try {
       const now = new Date();
       const createdAtIso = now.toISOString();
       const dateIso = createdAtIso.slice(0, 10);
 
-      const consumptionRecord: Omit<ConsumptionLog, "id"> = {
-        date: dateIso,
-        vendorName: isDeduct 
-          ? finalDepartment 
-          : `INBOUND RECEIVING (${selectedIngredient.vendor || "Direct"})`,
-        ingredientId: selectedIngredient.id!,
-        ingredientName: selectedIngredient.name,
-        quantity: isDeduct ? qtyNum : -qtyNum, // Negative consumption represents receiving
-        unit: selectedUnit,
-        pricePerPack: selectedIngredient.price,
-        totalCost: isDeduct ? displayCost : -displayCost, // Negative cost representation for receipts
-        recordedBy: sigName,
-        operatorName: sigName,
-        signatureBase64: sigBase64,
-        ownerId: workspaceOwnerId,
-        createdAt: createdAtIso
-      };
-      
-      await safeAddDoc("inventory_consumptions", consumptionRecord);
+      for (const item of itemsToSave) {
+        const ing = item.ingredient;
+        const qtyNum = item.quantity;
+        const unit = item.unit;
 
-      if (autoUpdateStock) {
-        const newStock = isDeduct 
-          ? Math.max(0, parseFloat((currentStock - packagesToAdjust).toFixed(4)))
-          : parseFloat((currentStock + packagesToAdjust).toFixed(4));
+        const metrics = calculateItemMetrics(item, isDeduct);
+        const consumptionRecord: Omit<ConsumptionLog, "id"> = {
+          date: dateIso,
+          vendorName: isDeduct 
+            ? finalDepartment 
+            : `INBOUND RECEIVING (${ing.vendor || "Direct"})`,
+          ingredientId: ing.id!,
+          ingredientName: ing.name,
+          quantity: isDeduct ? qtyNum : -qtyNum,
+          unit: unit,
+          pricePerPack: ing.price,
+          totalCost: isDeduct ? metrics.displayCost : -metrics.displayCost,
+          recordedBy: opName,
+          operatorName: opName,
+          signatureBase64: digitalAuth,
+          ownerId: workspaceOwnerId,
+          createdAt: createdAtIso
+        };
 
-        await onEditIngredient(selectedIngredient.id!, {
-          inStock: newStock
-        });
+        await safeAddDoc("inventory_consumptions", consumptionRecord);
+
+        if (autoUpdateStock) {
+          await onEditIngredient(ing.id!, {
+            inStock: metrics.stockAfter
+          });
+        }
       }
 
-      setMessage({ 
-        type: "success", 
-        text: isDeduct 
-          ? `Used ${qtyNum} ${selectedUnit} of ${selectedIngredient.name}`
-          : `Received ${qtyNum} ${selectedUnit} of ${selectedIngredient.name}`
-      });
-
+      const count = itemsToSave.length;
+      // Reset state
+      setBatchItems([]);
       setSelectedIngredient(null);
       setInputQty("");
       setDepartment("");
-      setOperatorNameInput("");
       setShowSignaturePage(false);
-      
-      // Clear message after 3 secs
-      setTimeout(() => setMessage(null), 3000);
+
+      // Auto-logout: Return to 4-digit PIN login terminal
+      setActiveOperator(null);
+      setLogoutNotice(
+        isDeduct
+          ? `✓ Successfully recorded consumption for ${count} ${count === 1 ? 'ingredient' : 'ingredients'} by ${opName}. Operator session closed.`
+          : `✓ Successfully recorded stock receipt for ${count} ${count === 1 ? 'ingredient' : 'ingredients'} by ${opName}. Operator session closed.`
+      );
+
+      setTimeout(() => {
+        setLogoutNotice(null);
+      }, 9000);
     } catch (err: any) {
-      console.error(err);
-      setMessage({ type: "error", text: err.message || "Failed to save." });
+      console.error("Error committing batch to ledger:", err);
+      setMessage({ type: "error", text: err.message || "Failed to commit batch to ledger." });
     } finally {
       setSubmitting(false);
     }
   };
 
-  if (showSignaturePage && selectedIngredient) {
+  if (showSignaturePage) {
+    // Current review items
+    const reviewItems = batchItems;
+
     const isDeduct = posMode === "deduct";
-    const qtyNum = parseFloat(inputQty) || 0;
-    const equivalentQty = convertInputToNativeQty(qtyNum, selectedUnit, selectedIngredient);
-    
-    const currentStock = selectedIngredient.inStock !== undefined ? selectedIngredient.inStock : 0;
-    const stockAfter = isDeduct
-      ? Math.max(0, parseFloat((currentStock - equivalentQty).toFixed(4)))
-      : parseFloat((currentStock + equivalentQty).toFixed(4));
-
-    const remainingPoundInfo = calculatePoundData(
-      stockAfter,
-      selectedIngredient.unit,
-      selectedIngredient.weightPerCase,
-      selectedIngredient.weightPerCaseUnit,
-      selectedIngredient.pcsPerPound,
-      selectedIngredient.quantity
-    );
-
-    const remainingUnitsBreakdown = getMultiUnitBreakdown(stockAfter, selectedIngredient);
-    const currentUnitsBreakdown = getMultiUnitBreakdown(currentStock, selectedIngredient);
-
-    const calculatedCost = (() => {
-      const cleanNative = (selectedIngredient.unit || "lbs").toLowerCase().trim();
-      const isLb = ["lb", "lbs", "pound", "pounds"].includes(cleanNative);
-
-      if (selectedIngredient.pricePerGram) {
-        const gramsAmt = isLb ? equivalentQty * 453.59237 : equivalentQty;
-        return gramsAmt * selectedIngredient.pricePerGram;
-      } else if (isLb && selectedIngredient.quantity) {
-        return (equivalentQty / selectedIngredient.quantity) * selectedIngredient.price;
-      } else {
-        return (equivalentQty / (selectedIngredient.quantity || 1)) * selectedIngredient.price;
-      }
-    })();
-
-    const handleConfirmSignOff = () => {
-      if (!operatorNameInput.trim()) {
-        alert("Please write your name first.");
-        return;
-      }
-
-      const canvas = canvasRef.current;
-      let signatureData = "";
-      if (canvas) {
-        signatureData = canvas.toDataURL("image/png");
-      }
-
-      handleSave(operatorNameInput.trim(), signatureData);
-    };
+    const totalBatchCost = reviewItems.reduce((acc, item) => {
+      const m = calculateItemMetrics(item, isDeduct);
+      return acc + m.displayCost;
+    }, 0);
 
     return (
       <div className="fixed inset-0 z-50 bg-[#F4F4F5] flex flex-col font-sans overflow-hidden" id="pos-sign-off-page">
@@ -1042,354 +1687,354 @@ export default function TabletConsumptionPOS({
             <button
               onClick={() => setShowSignaturePage(false)}
               className="p-1 hover:bg-neutral-800 rounded transition-colors text-neutral-400 hover:text-white cursor-pointer"
+              title="Back"
             >
               <ArrowLeft className="h-6 w-6" />
             </button>
             <div>
-              <h1 className="text-base sm:text-lg font-bold font-mono text-emerald-400">
-                {isDeduct ? "Consumption Sign-Off Verification" : "Stock Receipt Verification"}
+              <h1 className="text-base sm:text-lg font-bold font-mono text-emerald-400 flex items-center gap-2">
+                <span>
+                  {isDeduct 
+                    ? `Review Consumption Batch (${reviewItems.length} ${reviewItems.length === 1 ? 'item' : 'items'})` 
+                    : `Review Stock Receipt Batch (${reviewItems.length} ${reviewItems.length === 1 ? 'item' : 'items'})`}
+                </span>
               </h1>
-              <p className="text-[10px] text-neutral-400 uppercase tracking-wider">Auditor Ledger Signature Step</p>
+              <p className="text-[10px] text-neutral-400 uppercase tracking-wider">
+                Auditor Ledger Signature Step • Review all items before committing
+              </p>
             </div>
           </div>
           <button
             onClick={() => setShowSignaturePage(false)}
-            className="text-xs font-bold bg-neutral-800 hover:bg-neutral-700 text-white px-3 sm:px-4 py-2 rounded transition-colors cursor-pointer"
+            className="text-xs font-bold bg-neutral-800 hover:bg-neutral-700 text-white px-3 sm:px-4 py-2 rounded-xl transition-colors cursor-pointer"
           >
-            Cancel & Go Back
+            ← Cancel & Go Back
           </button>
         </div>
 
         {/* Layout split */}
-        <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-y-auto md:overflow-hidden">
-          {/* Left Column: Transaction details summary */}
-          <div className="w-full md:w-[380px] bg-neutral-900 text-white p-5 sm:p-6 flex flex-col justify-between border-r border-neutral-800 overflow-y-auto shrink-0 max-h-[360px] md:max-h-none">
-            <div className="space-y-6">
-              <div>
-                <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">Transaction Summary</span>
-                <div className="h-px bg-neutral-800 mt-1 mb-4"></div>
-                <div className="bg-neutral-800/80 p-4 rounded-xl space-y-3 border border-neutral-700/50">
-                  <div>
-                    <label className="text-[10px] font-semibold text-neutral-400 uppercase block">Ingredient</label>
-                    <span className="font-bold text-base text-emerald-400">{selectedIngredient.name}</span>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3 pt-2 border-t border-neutral-800">
-                    <div>
-                      <label className="text-[10px] font-semibold text-neutral-400 uppercase block">
-                        Current On-Hand
-                      </label>
-                      <span className="font-mono font-bold text-neutral-200 text-xs sm:text-sm">
-                        {currentStock} {selectedIngredient.unit || "pcs"}
-                      </span>
-                      {currentUnitsBreakdown.length > 1 && (
-                        <div className="text-[10px] text-neutral-400 mt-0.5 space-y-0.5 font-mono">
-                          {currentUnitsBreakdown.slice(1).map((b, i) => (
-                            <div key={i}>• {b.qtyFormatted}</div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    <div>
-                      <label className="text-[10px] font-semibold text-neutral-400 uppercase block">
-                        {isDeduct ? "Quantity Deducted" : "Quantity Received"}
-                      </label>
-                      <div className="flex flex-col">
-                        <span className="font-mono font-bold text-white text-xs sm:text-sm">{inputQty} {selectedUnit}</span>
-                        {selectedUnit.toLowerCase().trim() !== (selectedIngredient.unit || "lbs").toLowerCase().trim() && (
-                          <span className="font-mono text-emerald-300 text-[10px]">
-                            (~{equivalentQty.toFixed(2)} {selectedIngredient.unit || "lbs"})
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Stock Left After Deduction / New Balance Banner */}
-                  <div className="pt-3 border-t border-neutral-700/80 bg-neutral-900/90 -mx-4 -mb-4 p-3.5 rounded-b-xl border-t border-emerald-500/40">
-                    <div className="flex justify-between items-start mb-2">
-                      <div>
-                        <label className="text-[10px] font-extrabold text-emerald-400 uppercase block tracking-wider">
-                          {isDeduct ? "Stock Left After Deduction" : "New Balance After Receipt"}
-                        </label>
-                        <div className="flex items-baseline gap-1.5 mt-0.5">
-                          <span className="font-mono font-black text-emerald-300 text-base sm:text-lg">
-                            {stockAfter} {selectedIngredient.unit || "pcs"}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <label className="text-[10px] font-semibold text-neutral-400 uppercase block">Value</label>
-                        <span className="font-mono font-bold text-white text-sm">${calculatedCost.toFixed(2)}</span>
-                      </div>
-                    </div>
-
-                    {/* Detailed Multi-Unit Remaining Balance Breakdown */}
-                    {remainingUnitsBreakdown.length > 0 && (
-                      <div className="mt-2.5 pt-2.5 border-t border-neutral-800/90 space-y-1.5">
-                        <span className="text-[9px] font-extrabold text-neutral-400 uppercase tracking-wider block">
-                          Stock Left By Unit:
-                        </span>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                          {remainingUnitsBreakdown.map((item, idx) => (
-                            <div 
-                              key={idx} 
-                              className="bg-neutral-800/95 border border-neutral-700/70 px-2.5 py-1.5 rounded-lg flex items-center justify-between"
-                            >
-                              <span className="text-[10px] font-semibold text-neutral-400">{item.unitLabel}:</span>
-                              <span className="font-mono font-bold text-emerald-300 text-xs sm:text-sm">{item.qtyFormatted}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
+        <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-y-auto lg:overflow-hidden">
+          {/* Left Column: Transaction details summary & items list */}
+          <div className="flex-1 bg-neutral-900 text-white p-4 sm:p-6 flex flex-col justify-between border-r border-neutral-800 overflow-y-auto min-h-0">
+            <div className="space-y-4">
+              {/* Batch Summary Stats Bar */}
+              <div className="bg-neutral-800/90 border border-neutral-700/60 rounded-2xl p-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div>
+                  <label className="text-[10px] font-bold text-neutral-400 uppercase block">Total Items</label>
+                  <span className="text-base sm:text-lg font-black font-mono text-white">
+                    {reviewItems.length} {reviewItems.length === 1 ? "Ingredient" : "Ingredients"}
+                  </span>
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-neutral-400 uppercase block">Total Value</label>
+                  <span className="text-base sm:text-lg font-black font-mono text-emerald-400">
+                    ${totalBatchCost.toFixed(2)}
+                  </span>
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-neutral-400 uppercase block">
+                    {isDeduct ? "Operating Department" : "Receipt Source"}
+                  </label>
+                  <span className="text-xs sm:text-sm font-bold text-neutral-200 truncate block">
+                    {isDeduct ? (department || "⚠️ Missing") : "Inbound Store"}
+                  </span>
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-neutral-400 uppercase block">Ledger Mode</label>
+                  <span className={`text-xs font-mono font-bold uppercase inline-block px-2 py-0.5 rounded-full ${
+                    isDeduct ? "bg-red-500/20 text-red-300 border border-red-500/30" : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                  }`}>
+                    {isDeduct ? "Consumption Deduction" : "Inbound Stock Receipt"}
+                  </span>
                 </div>
               </div>
 
-              <div className="space-y-4">
-                <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">Ledger Meta</span>
-                <div className="space-y-2 text-xs">
-                  <div className="flex justify-between py-1.5 border-b border-neutral-800">
-                    <span className="text-neutral-400">Created At:</span>
-                    <span className="font-mono font-bold text-neutral-200">
-                      {new Date().toLocaleString(undefined, {
-                        year: "numeric",
-                        month: "2-digit",
-                        day: "2-digit",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </span>
-                  </div>
-                  <div className="flex justify-between py-1.5 border-b border-neutral-800">
-                    <span className="text-neutral-400">{isDeduct ? "Department:" : "Supplier Source:"}</span>
-                    <span className="font-bold text-neutral-200">
-                      {isDeduct 
-                        ? department
-                        : (selectedIngredient.vendor || "Direct Store / Manual")}
-                    </span>
-                  </div>
-                  <div className="flex justify-between py-1.5 border-b border-neutral-800">
-                    <span className="text-neutral-400">Storage Location:</span>
-                    <span className="font-mono text-neutral-200">{selectedIngredient.location || "Default / Unassigned"}</span>
-                  </div>
+              {/* Items Table / Cards */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">
+                    Selected Ingredients Breakdown ({reviewItems.length})
+                  </span>
+                  <span className="text-[10px] text-neutral-500">
+                    Scroll to review all items
+                  </span>
                 </div>
+
+                {reviewItems.length === 0 ? (
+                  <div className="p-8 text-center text-neutral-400 bg-neutral-800/40 rounded-2xl border border-neutral-700/50">
+                    <p className="text-sm font-bold">No ingredients in this batch.</p>
+                    <button
+                      onClick={() => setShowSignaturePage(false)}
+                      className="mt-3 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold"
+                    >
+                      ← Back to POS to select ingredients
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-2.5 max-h-[50vh] lg:max-h-[54vh] overflow-y-auto pr-1">
+                    {reviewItems.map((item, idx) => {
+                      const metrics = calculateItemMetrics(item, isDeduct);
+                      const ing = item.ingredient;
+
+                      return (
+                        <div
+                          key={ing.id || idx}
+                          className="bg-neutral-800/80 border border-neutral-700/60 rounded-xl p-3.5 sm:p-4 hover:border-neutral-600 transition-colors"
+                        >
+                          <div className="flex items-start justify-between gap-3 mb-2.5">
+                            <div>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-bold text-sm sm:text-base text-white">
+                                  {getIngredientDisplayName(ing)}
+                                </span>
+                                {ing.category && (
+                                  <span className="text-[9px] font-bold text-amber-300 bg-amber-950/60 border border-amber-800 px-1.5 py-0.2 rounded uppercase">
+                                    {ing.category}
+                                  </span>
+                                )}
+                                <span className="text-[10px] text-neutral-400 font-mono">
+                                  📍 {ing.location || "Unassigned"}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-3">
+                              <span className="text-xs font-mono font-bold text-emerald-400">
+                                ${metrics.displayCost.toFixed(2)}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleRemoveReviewItem(ing.id, idx);
+                                }}
+                                className="text-neutral-400 hover:text-red-400 p-2 rounded-lg hover:bg-neutral-700/80 transition-colors cursor-pointer"
+                                title="Remove item from batch"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-2 text-xs pt-2 border-t border-neutral-700/60">
+                            <div>
+                              <label className="text-[9px] font-semibold text-neutral-400 uppercase block">
+                                Current Stock
+                              </label>
+                              <span className="font-mono font-bold text-neutral-300 text-xs">
+                                {metrics.currentStock} {ing.unit || "pcs"}
+                              </span>
+                            </div>
+
+                            <div>
+                              <label className="text-[9px] font-semibold text-neutral-400 uppercase block">
+                                {isDeduct ? "Deducting" : "Receiving"}
+                              </label>
+                              <span className={`font-mono font-bold text-xs ${
+                                isDeduct ? "text-red-400" : "text-emerald-400"
+                              }`}>
+                                {isDeduct ? "-" : "+"}{item.quantity} {item.unit}
+                              </span>
+                              {item.unit.toLowerCase().trim() !== (ing.unit || "lbs").toLowerCase().trim() && (
+                                <span className="text-[9px] text-neutral-400 block font-mono">
+                                  (~{metrics.equivalentQty.toFixed(2)} {ing.unit || "lbs"})
+                                </span>
+                              )}
+                            </div>
+
+                            <div>
+                              <label className="text-[9px] font-bold text-emerald-400 uppercase block">
+                                Stock After
+                              </label>
+                              <span className="font-mono font-black text-emerald-300 text-xs sm:text-sm">
+                                {metrics.stockAfter} {ing.unit || "pcs"}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Multi-unit remaining breakdown if applicable */}
+                          {metrics.remainingUnitsBreakdown.length > 1 && (
+                            <div className="mt-2 pt-1.5 border-t border-neutral-750 flex flex-wrap gap-2 text-[10px] text-neutral-400 font-mono">
+                              <span className="text-neutral-500">Breakdown:</span>
+                              {metrics.remainingUnitsBreakdown.map((b, bi) => (
+                                <span key={bi} className="bg-neutral-900 px-1.5 py-0.5 rounded text-neutral-300">
+                                  {b.qtyFormatted}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
 
-            <div className="bg-emerald-950/45 border border-emerald-900 p-4 rounded-xl text-[11px] text-emerald-200 leading-relaxed mt-6">
-              <span className="font-bold block text-emerald-400 mb-1">Stock Control Act</span>
-              Federal kitchen and workspace cost control guidelines require a registered name & hand-drawn signature log to audit on-demand stock level adjustments.
+            <div className="bg-emerald-950/60 border border-emerald-800/80 p-3.5 rounded-xl text-[11px] text-emerald-200 leading-relaxed mt-4 shrink-0">
+              <span className="font-bold flex items-center gap-1.5 text-emerald-400 mb-0.5">
+                <ShieldCheck className="h-4 w-4 text-emerald-400" /> Digital PIN Operator Audit & Auto-Logout
+              </span>
+              This batch adjustment is authenticated under operator <strong className="text-white">{activeOperator?.name}</strong> (Staff PIN #{activeOperator?.pin}). Once confirmed, it commits all {reviewItems.length} records to the consumption ledger and automatically logs out to enter a new PIN.
             </div>
           </div>
 
-          {/* Right Column: Signing Form */}
-          <div className="flex-1 p-4 sm:p-6 md:p-8 overflow-y-auto bg-white min-h-0">
-            <div className="w-full max-w-xl mx-auto space-y-6 py-2">
-              <div className="space-y-2">
-                <h2 className="text-2xl font-bold text-neutral-900 tracking-tight font-sans">Verify Identity & Draw Signature</h2>
+          {/* Right Column: Verified Operator Sign-Off & Confirm */}
+          <div className="w-full lg:w-[420px] xl:w-[450px] p-5 sm:p-6 bg-white overflow-y-auto min-h-0 flex flex-col justify-between shrink-0 border-t lg:border-t-0 lg:border-l border-neutral-200">
+            <div className="space-y-5">
+              <div className="space-y-1">
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-bold font-mono">
+                  <CheckCircle className="h-3.5 w-3.5 text-emerald-600" />
+                  Operator Authenticated
+                </div>
+                <h2 className="text-xl sm:text-2xl font-bold text-neutral-900 tracking-tight font-sans">
+                  {isDeduct ? "Confirm Consumption Batch" : "Confirm Stock Receipt"}
+                </h2>
                 <p className="text-xs text-neutral-500">
-                  Please write your legal name and draw your signature on the canvas below to authenticate this POS stock change.
+                  Verify the operating staff signature before committing {reviewItems.length} items to the inventory ledger.
                 </p>
               </div>
 
-              <div className="space-y-5">
-                {/* 1. Operator / Signee Search Bar & Staff Selector */}
-                <div className="space-y-2 relative" ref={staffSearchRef}>
-                  <div className="flex items-center justify-between">
-                    <label className="text-[11px] font-bold text-neutral-500 uppercase tracking-wider block">
-                      1. Operator / Signee Full Name
-                    </label>
-                    {matchedStaff ? (
-                      <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 px-2.5 py-0.5 rounded-full flex items-center gap-1 font-sans">
-                        <CheckCircle className="h-3 w-3 text-emerald-600" />
-                        Registered Staff ({matchedStaff.role || "Staff"})
-                      </span>
-                    ) : allStaff.length > 0 ? (
-                      <span className="text-[10px] font-medium text-neutral-400 font-sans">
-                        {allStaff.length} registered staff in database
-                      </span>
-                    ) : null}
-                  </div>
+              {/* Verified Operator Card */}
+              <div className="bg-gradient-to-br from-neutral-900 via-neutral-900 to-neutral-850 text-white rounded-2xl p-5 border border-neutral-700 shadow-xl relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none"></div>
 
-                  {/* Search Input Bar */}
-                  <div className="relative">
-                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-neutral-400" />
-                    <input
-                      type="text"
-                      required
-                      value={operatorNameInput}
-                      onChange={(e) => {
-                        setOperatorNameInput(e.target.value);
-                        setShowStaffDropdown(true);
-                      }}
-                      onFocus={() => setShowStaffDropdown(true)}
-                      placeholder={allStaff.length > 0 ? "Search staff by name, role, or ID..." : "e.g. Chef John Smith"}
-                      className="w-full text-base sm:text-sm border-2 border-neutral-300 rounded-xl pl-12 pr-10 py-3 bg-white text-neutral-900 font-bold focus:border-emerald-600 focus:outline-none transition-all shadow-2xs placeholder:text-neutral-400 placeholder:font-normal"
-                    />
-                    {operatorNameInput ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setOperatorNameInput("");
-                          setShowStaffDropdown(true);
-                        }}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600 p-1 cursor-pointer"
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
-                    ) : (
-                      <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-neutral-400 pointer-events-none" />
-                    )}
-
-                    {/* Staff Dropdown Menu */}
-                    {showStaffDropdown && (
-                      <div className="absolute left-0 right-0 top-full mt-1.5 bg-white border border-neutral-200 rounded-2xl shadow-xl z-30 max-h-60 overflow-y-auto divide-y divide-neutral-100">
-                        <div className="p-2.5 bg-neutral-50 text-[10px] font-bold text-neutral-500 uppercase tracking-wider flex items-center justify-between border-b border-neutral-100">
-                          <span>Database Staff Registry ({filteredStaff.length})</span>
-                          <span className="text-[9px] text-neutral-400">Click staff member to select</span>
-                        </div>
-                        {filteredStaff.length > 0 ? (
-                          filteredStaff.map((staff) => {
-                            const isSelected = (staff.name || "").toLowerCase().trim() === operatorNameInput.toLowerCase().trim();
-                            return (
-                              <button
-                                key={staff.id || staff.name}
-                                type="button"
-                                onClick={() => {
-                                  setOperatorNameInput(staff.name);
-                                  setShowStaffDropdown(false);
-                                }}
-                                className={`w-full text-left px-3.5 py-2.5 hover:bg-emerald-50/80 transition-colors flex items-center justify-between cursor-pointer ${
-                                  isSelected ? "bg-emerald-50 border-l-4 border-emerald-500 font-bold" : ""
-                                }`}
-                              >
-                                <div className="flex items-center gap-2.5">
-                                  <div className="w-7 h-7 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold flex items-center justify-center shrink-0">
-                                    {(staff.name || "?").charAt(0).toUpperCase()}
-                                  </div>
-                                  <div>
-                                    <div className="text-xs font-bold text-neutral-900 leading-tight">
-                                      {staff.name}
-                                    </div>
-                                    <div className="text-[10px] text-neutral-500 flex items-center gap-1.5 mt-0.5">
-                                      {staff.role && <span className="bg-neutral-100 border border-neutral-200 px-1.5 py-0.2 rounded text-[9px] text-neutral-700">{staff.role}</span>}
-                                      {staff.dept && <span className="text-neutral-400">• {staff.dept}</span>}
-                                    </div>
-                                  </div>
-                                </div>
-
-                                {staff.employeeCode && (
-                                  <span className="text-[10px] font-mono text-neutral-400 bg-neutral-50 border border-neutral-200 px-1.5 py-0.5 rounded">
-                                    #{staff.employeeCode}
-                                  </span>
-                                )}
-                              </button>
-                            );
-                          })
-                        ) : (
-                          <div className="p-4 text-center text-xs text-neutral-500 space-y-1">
-                            <p className="font-semibold text-neutral-700">No registered staff matching "{operatorNameInput}"</p>
-                            <p className="text-[11px] text-neutral-400">You can still use this custom name or register staff in the Staff Directory.</p>
-                          </div>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-center gap-3.5">
+                    <div className="w-12 h-12 rounded-2xl bg-emerald-600 text-white font-black text-xl flex items-center justify-center shadow-lg border border-emerald-400/40">
+                      {(activeOperator?.name || "O").charAt(0).toUpperCase()}
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-base text-white font-sans">{activeOperator?.name || "Staff Operator"}</span>
+                        <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-mono font-bold px-2 py-0.5 rounded-full">
+                          PIN #{activeOperator?.pin}
+                        </span>
+                      </div>
+                      <div className="text-xs text-neutral-300 mt-0.5 flex items-center gap-2">
+                        <span>{activeOperator?.role || "Staff"}</span>
+                        {activeOperator?.dept && <span className="text-neutral-500">• {activeOperator.dept}</span>}
+                        {activeOperator?.employeeCode && (
+                          <span className="text-neutral-400 font-mono text-[11px]">(ID: {activeOperator.employeeCode})</span>
                         )}
                       </div>
-                    )}
-                  </div>
-
-                  {/* Quick-select Staff Chips */}
-                  {allStaff.length > 0 && (
-                    <div className="space-y-1 pt-1">
-                      <span className="text-[10px] text-neutral-400 font-bold uppercase tracking-wider block">
-                        Quick Select Registered Staff:
-                      </span>
-                      <div className="flex flex-wrap gap-1.5 max-h-20 overflow-y-auto">
-                        {allStaff.slice(0, 8).map((staff) => {
-                          const isSelected = (staff.name || "").toLowerCase().trim() === operatorNameInput.toLowerCase().trim();
-                          return (
-                            <button
-                              key={staff.id || staff.name}
-                              type="button"
-                              onClick={() => {
-                                setOperatorNameInput(staff.name);
-                                setShowStaffDropdown(false);
-                              }}
-                              className={`text-[11px] font-bold px-2.5 py-1 rounded-lg border transition-all cursor-pointer flex items-center gap-1.5 ${
-                                isSelected
-                                  ? "bg-emerald-600 text-white border-emerald-700 shadow-xs"
-                                  : "bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200"
-                              }`}
-                            >
-                              <User className={`h-3 w-3 ${isSelected ? "text-white" : "text-emerald-600"}`} />
-                              <span>{staff.name}</span>
-                              {staff.role && <span className={`text-[9px] ${isSelected ? "text-emerald-200" : "text-neutral-400"}`}>({staff.role})</span>}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Signature Drawing Canvas */}
-                <div className="space-y-1.5">
-                  <div className="flex justify-between items-center">
-                    <label className="text-[11px] font-bold text-neutral-500 uppercase tracking-wider block">
-                      2. Hand-drawn Signature Pad
-                    </label>
-                    <button
-                      type="button"
-                      onClick={clearCanvas}
-                      className="text-[11px] font-bold text-red-600 hover:text-red-700 flex items-center gap-1 cursor-pointer bg-red-50 hover:bg-red-100 px-2.5 py-1 rounded-lg transition-colors border border-red-200"
-                    >
-                      <Eraser className="h-3 w-3" /> Clear Signature
-                    </button>
-                  </div>
-
-                  <div className="relative border-2 border-dashed border-neutral-300 rounded-2xl bg-[#fafaf9] overflow-hidden group hover:border-emerald-500/50 transition-colors">
-                    <canvas
-                      ref={canvasRef}
-                      width={550}
-                      height={200}
-                      onMouseDown={startDrawing}
-                      onMouseMove={draw}
-                      onMouseUp={stopDrawing}
-                      onMouseLeave={stopDrawing}
-                      onTouchStart={startDrawing}
-                      onTouchMove={draw}
-                      onTouchEnd={stopDrawing}
-                      className="w-full h-[200px] cursor-crosshair block bg-transparent"
-                    />
-                    <div className="absolute bottom-3 left-4 pointer-events-none text-[10px] text-neutral-400 select-none uppercase font-bold tracking-wider font-mono flex items-center gap-1.5">
-                      <PenTool className="h-3 w-3 text-neutral-400" /> Use Mouse or Touch Screen to Draw Signature
                     </div>
                   </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowSwitchOperatorModal(true)}
+                    className="px-2.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 hover:text-white rounded-lg text-xs font-bold border border-neutral-600 transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
+                  >
+                    <UserCheck className="h-3.5 w-3.5 text-emerald-400" />
+                    <span>Switch</span>
+                  </button>
                 </div>
 
-                {/* Submit Controls */}
-                <div className="pt-4 flex gap-4">
-                  <button
-                    type="button"
-                    onClick={() => setShowSignaturePage(false)}
-                    className="flex-1 py-3.5 border-2 border-neutral-200 text-neutral-700 hover:bg-neutral-100 text-xs font-bold rounded-xl transition-colors cursor-pointer"
-                  >
-                    Go Back to Selection
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleConfirmSignOff}
-                    disabled={!operatorNameInput.trim() || submitting}
-                    className="flex-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs py-3.5 rounded-xl transition-colors border border-emerald-700 shadow-md flex items-center justify-center gap-2 cursor-pointer"
-                  >
-                    <Check className="h-4 w-4" />
-                    {submitting ? "Saving Ledger..." : isDeduct ? "Confirm & Sign Consumption" : "Confirm & Sign Receipt"}
-                  </button>
+                <div className="mt-4 pt-4 border-t border-neutral-800 grid grid-cols-2 gap-3 text-xs">
+                  <div>
+                    <span className="text-[10px] uppercase text-neutral-400 font-bold block">Authorization</span>
+                    <span className="text-emerald-400 font-bold flex items-center gap-1 mt-0.5 text-xs">
+                      <ShieldCheck className="h-3.5 w-3.5" /> PIN Verified
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase text-neutral-400 font-bold block">Sign-Off Time</span>
+                    <span className="text-neutral-300 font-mono text-[11px] mt-0.5 block">
+                      {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                    </span>
+                  </div>
                 </div>
               </div>
+
+              {/* Action summary badge */}
+              <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-4 space-y-2">
+                <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider block">
+                  Batch Ledger Summary
+                </span>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div>
+                    <span className="text-neutral-500">Operation:</span>
+                    <span className={`font-bold block ${isDeduct ? "text-red-600" : "text-emerald-600"}`}>
+                      {isDeduct ? "Consumption Deduction" : "Inbound Receipt"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-neutral-500">Allocation Target:</span>
+                    <span className="font-bold text-neutral-800 block truncate">
+                      {isDeduct ? department : "Inbound Receiving"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-neutral-500">Total Entries:</span>
+                    <span className="font-mono font-bold text-neutral-900 block">
+                      {reviewItems.length} records
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-neutral-500">Total Cost:</span>
+                    <span className="font-mono font-bold text-emerald-700 block">
+                      ${totalBatchCost.toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800 flex items-start gap-2">
+                <Lock className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                <span>
+                  After confirming, you will be <strong>automatically logged out</strong> to protect the terminal for the next operator PIN.
+                </span>
+              </div>
+            </div>
+
+            {/* Submit Controls */}
+            <div className="pt-4 flex flex-col gap-2.5">
+              <button
+                type="button"
+                onClick={() => handleConfirmBatchSignOff(reviewItems)}
+                disabled={submitting || reviewItems.length === 0}
+                className={`w-full py-4 text-white font-bold text-sm sm:text-base rounded-xl transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer active:scale-[0.99] ${
+                  submitting || reviewItems.length === 0
+                    ? "bg-neutral-300 text-neutral-500 cursor-not-allowed shadow-none"
+                    : isDeduct 
+                      ? "bg-red-600 hover:bg-red-700 border border-red-700 shadow-red-900/20" 
+                      : "bg-emerald-600 hover:bg-emerald-700 border border-emerald-700 shadow-emerald-900/20"
+                }`}
+              >
+                <Check className="h-5 w-5" />
+                {submitting 
+                  ? "Recording Ledger & Logging Out..." 
+                  : isDeduct 
+                    ? `Confirm & Record Consumption (${reviewItems.length})` 
+                    : `Confirm & Record Receipt (${reviewItems.length})`}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowSignaturePage(false)}
+                className="w-full py-2.5 text-neutral-600 hover:text-neutral-900 text-xs font-bold transition-colors cursor-pointer hover:bg-neutral-100 rounded-xl"
+              >
+                ← Back to POS / Add More Items
+              </button>
             </div>
           </div>
         </div>
+
+        {showSwitchOperatorModal && (
+          <div className="fixed inset-0 z-60 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
+            <TabletPinKeypad
+              allStaff={allStaff}
+              user={user}
+              onLogin={(op) => {
+                setActiveOperator(op);
+                setShowSwitchOperatorModal(false);
+              }}
+              onClose={() => setShowSwitchOperatorModal(false)}
+              isModal={true}
+            />
+          </div>
+        )}
       </div>
     );
   }
@@ -1421,14 +2066,33 @@ export default function TabletConsumptionPOS({
     }
   };
 
+  // If no operator is logged in, show the 4-digit staff code login terminal
+  if (!activeOperator) {
+    return (
+      <div className="fixed inset-0 z-50 bg-neutral-950 flex flex-col font-sans overflow-y-auto min-h-[100dvh] w-full">
+        <TabletPinKeypad
+          allStaff={allStaff}
+          user={user}
+          onLogin={(op) => {
+            setActiveOperator(op);
+          }}
+          onClose={onClose}
+          isModal={false}
+          logoutNotice={logoutNotice}
+          onClearLogoutNotice={() => setLogoutNotice(null)}
+        />
+      </div>
+    );
+  }
+
   return (
-    <div className="fixed inset-0 z-50 bg-[#F8F9FA] flex flex-col font-sans">
+    <div className="fixed inset-0 z-50 bg-[#F8F9FA] flex flex-col font-sans overflow-hidden h-[100dvh] w-full">
       {/* Top Navigation */}
-      <div className="bg-emerald-600 text-white flex items-center justify-between px-6 py-4 shadow-xl shrink-0">
-        <div className="flex items-center gap-6">
+      <div className="bg-emerald-600 text-white flex flex-wrap md:flex-nowrap items-center justify-between px-4 sm:px-6 py-3 sm:py-3.5 shadow-xl shrink-0 gap-3">
+        <div className="flex items-center gap-3 sm:gap-6 flex-wrap">
           <div className="flex items-center gap-2">
-            <Monitor className="h-6 w-6 text-emerald-400" />
-            <h1 className="text-xl font-bold font-mono">
+            <Monitor className="h-5 w-5 sm:h-6 sm:w-6 text-emerald-300" />
+            <h1 className="text-base sm:text-xl font-bold font-mono">
               {posMode === "deduct" && (language === "es" ? "Deducir Stock (POS)" : "POS Deduct Stock")}
               {posMode === "receive" && (language === "es" ? "Recibir Stock (POS)" : "POS Receive Stock")}
               {posMode === "add-item" && (language === "es" ? "Adición Catálogo (POS)" : "POS Catalog Addition")}
@@ -1436,40 +2100,70 @@ export default function TabletConsumptionPOS({
           </div>
           
           {posMode === "deduct" && (
-            <div className="flex gap-3 items-center pl-6 border-l border-neutral-700">
+            <div className="flex gap-2 sm:gap-3 items-center sm:pl-4 sm:border-l sm:border-emerald-500">
               <button
                 type="button"
                 onClick={() => setShowDeptModal(true)}
-                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg border text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+                className={`flex items-center gap-1.5 px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-lg border text-xs sm:text-sm font-bold transition-all cursor-pointer ${
                   !department
-                    ? "bg-amber-500/25 border-amber-400 text-amber-200 animate-pulse font-extrabold"
-                    : "bg-neutral-800 hover:bg-neutral-700 border-neutral-600 text-white"
+                    ? "bg-amber-400 text-amber-950 border-amber-300 animate-pulse font-extrabold shadow-sm"
+                    : "bg-emerald-800 hover:bg-emerald-700 border-emerald-500 text-white shadow-xs"
                 }`}
               >
-                <MapPin className="h-4 w-4 text-emerald-400" />
-                <span>
-                  {department || (language === "es" ? "⚠️ Seleccionar Departamento" : "⚠️ Select Department")}
+                <MapPin className="h-4 w-4 text-emerald-300" />
+                <span className="truncate max-w-[140px] sm:max-w-none">
+                  {department || (language === "es" ? "⚠️ Elegir Departamento" : "⚠️ Select Department")}
                 </span>
-                <ChevronDown className="h-4 w-4 opacity-70 ml-1" />
+                <ChevronDown className="h-3.5 w-3.5 opacity-70 ml-1" />
               </button>
             </div>
           )}
 
           {posMode === "receive" && (
-            <div className="flex gap-4 items-center pl-6 border-l border-neutral-700">
-              <span className="text-xs bg-emerald-800 px-3 py-1.5 font-mono font-bold text-emerald-150 uppercase tracking-wide">
+            <div className="flex items-center sm:pl-4 sm:border-l sm:border-emerald-500">
+              <span className="text-xs bg-emerald-800 px-3 py-1.5 font-mono font-bold text-emerald-100 uppercase tracking-wide rounded-md">
                 {language === "es" ? "Modo reabastecimiento" : "Stock replenishment mode"}
               </span>
             </div>
           )}
         </div>
         
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0 ml-auto">
+          {/* Active Operator Badge & Switcher */}
+          {activeOperator && (
+            <div className="flex items-center gap-2 bg-emerald-900 border border-emerald-500/60 rounded-xl px-2.5 sm:px-3 py-1.5 shadow-sm">
+              <div className="relative">
+                <div className="w-7 h-7 rounded-full bg-white text-emerald-900 font-black text-xs flex items-center justify-center shadow-xs">
+                  {activeOperator.name.charAt(0).toUpperCase()}
+                </div>
+                <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-emerald-900 animate-pulse"></span>
+              </div>
+              <div className="text-left hidden sm:block">
+                <div className="text-xs font-bold text-white flex items-center gap-1.5 leading-tight">
+                  <span className="truncate max-w-[110px]">{activeOperator.name}</span>
+                  <span className="text-[10px] font-mono text-emerald-300 font-normal">#{activeOperator.pin}</span>
+                </div>
+                <div className="text-[10px] text-emerald-200 leading-tight truncate max-w-[140px]">
+                  {activeOperator.role || "Operator"} {activeOperator.dept ? `• ${activeOperator.dept}` : ""}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSwitchOperatorModal(true)}
+                className="ml-1 px-2 py-1 bg-emerald-700/80 hover:bg-emerald-600 text-emerald-100 hover:text-white rounded-lg text-[10px] font-bold uppercase tracking-wider transition-colors cursor-pointer flex items-center gap-1"
+                title="Switch Staff Operator"
+              >
+                <Lock className="h-3 w-3" />
+                <span>Switch</span>
+              </button>
+            </div>
+          )}
+
           {/* Language Selection Toggle */}
           <div className="flex bg-emerald-800 rounded-lg p-0.5 border border-emerald-700 shadow-inner shrink-0">
             <button
               onClick={() => setLanguage("en")}
-              className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all cursor-pointer ${
+              className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-md text-xs font-bold transition-all cursor-pointer ${
                 language === "en"
                   ? "bg-white text-emerald-900 shadow-sm font-black"
                   : "text-emerald-200 hover:text-white"
@@ -1479,7 +2173,7 @@ export default function TabletConsumptionPOS({
             </button>
             <button
               onClick={() => setLanguage("es")}
-              className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all cursor-pointer ${
+              className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-md text-xs font-bold transition-all cursor-pointer ${
                 language === "es"
                   ? "bg-white text-emerald-900 shadow-sm font-black"
                   : "text-emerald-200 hover:text-white"
@@ -1491,26 +2185,27 @@ export default function TabletConsumptionPOS({
 
           <button
             onClick={onClose}
-            className="flex items-center gap-2 bg-neutral-800 hover:bg-neutral-700 text-white px-4 py-2 rounded transition-colors font-bold text-sm"
+            className="flex items-center gap-1.5 bg-neutral-900 hover:bg-neutral-800 text-white px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg transition-colors font-bold text-xs sm:text-sm cursor-pointer shadow-sm"
           >
-            <X className="h-4 w-4" /> {language === "es" ? "Salir de POS" : "Exit POS Mode"}
+            <X className="h-4 w-4" /> <span className="hidden sm:inline">{language === "es" ? "Salir de POS" : "Exit POS"}</span>
           </button>
         </div>
       </div>
 
       {/* Mode Segmented Controls Bar */}
-      <div className="bg-neutral-900 text-white flex items-center justify-between px-6 py-3 border-b border-neutral-800 shadow-md shrink-0">
+      <div className="bg-neutral-900 text-white flex flex-wrap sm:flex-nowrap items-center justify-between px-4 sm:px-6 py-2.5 sm:py-3 border-b border-neutral-800 shadow-md shrink-0 gap-2">
         <div className="flex gap-2">
           <button
             onClick={() => {
               setPosMode("deduct");
               setSelectedIngredient(null);
               setInputQty("");
+              setBatchItems([]);
             }}
-            className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+            className={`flex items-center gap-2 px-4 sm:px-5 py-2 sm:py-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
               posMode === "deduct"
                 ? "bg-red-600 text-white shadow-md shadow-red-900/30"
-                : "bg-neutral-850 text-neutral-400 hover:bg-neutral-800 hover:text-white"
+                : "bg-neutral-800 text-neutral-400 hover:bg-neutral-750 hover:text-white"
             }`}
           >
             <TrendingDown className="h-4 w-4" />
@@ -1524,11 +2219,12 @@ export default function TabletConsumptionPOS({
                   setPosMode("receive");
                   setSelectedIngredient(null);
                   setInputQty("");
+                  setBatchItems([]);
                 }}
-                className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                className={`flex items-center gap-2 px-4 sm:px-5 py-2 sm:py-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                   posMode === "receive"
                     ? "bg-emerald-600 text-white shadow-md shadow-emerald-900/30"
-                    : "bg-neutral-850 text-neutral-400 hover:bg-neutral-800 hover:text-white"
+                    : "bg-neutral-800 text-neutral-400 hover:bg-neutral-750 hover:text-white"
                 }`}
               >
                 <TrendingUp className="h-4 w-4" />
@@ -1540,32 +2236,33 @@ export default function TabletConsumptionPOS({
                   setPosMode("add-item");
                   setSelectedIngredient(null);
                   setInputQty("");
+                  setBatchItems([]);
                 }}
-                className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                className={`flex items-center gap-2 px-4 sm:px-5 py-2 sm:py-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                   posMode === "add-item"
                     ? "bg-amber-600 text-white shadow-md shadow-amber-900/30"
-                    : "bg-neutral-850 text-neutral-400 hover:bg-neutral-800 hover:text-white"
+                    : "bg-neutral-800 text-neutral-400 hover:bg-neutral-750 hover:text-white"
                 }`}
               >
                 <Plus className="h-4 w-4" />
-                {language === "es" ? "Nuevo Artículo (Catálogo)" : "Add New Item (Catalog)"}
+                {language === "es" ? "Nuevo Artículo" : "Add New Item"}
               </button>
             </>
           )}
         </div>
         
-        <div className="text-[10px] font-mono text-neutral-500 font-bold uppercase tracking-wider">
+        <div className="text-[10px] font-mono text-neutral-400 font-bold uppercase tracking-wider hidden sm:block">
           {language === "es" ? "Cliente de Tablet de Costos" : "Culinary Cost Tablet Client"}
         </div>
       </div>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-col md:flex-row flex-1 overflow-hidden min-h-0">
         {/* Render standard layout for Deduct and Receive modes */}
         {posMode !== "add-item" && (
           <>
             {/* Left column: Categories & Items */}
-            <div className="flex-1 flex flex-col border-r border-neutral-300 bg-white">
-              <div className="p-4 border-b border-neutral-200 flex flex-col sm:flex-row items-stretch sm:items-center gap-4 bg-neutral-50 shadow-sm z-10">
+            <div className="flex-1 flex flex-col border-r border-neutral-300 bg-white min-w-0 overflow-hidden">
+              <div className="p-3 sm:p-4 border-b border-neutral-200 flex flex-col sm:flex-row items-stretch sm:items-center gap-3 bg-neutral-50 shadow-sm z-10 shrink-0">
                 <div className="relative flex-1">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-neutral-400" />
                   <input 
@@ -1573,7 +2270,7 @@ export default function TabletConsumptionPOS({
                     placeholder={language === "es" ? "Buscar ingredientes... (bilingüe)" : "Search ingredients..."}
                     value={searchQuery}
                     onChange={e => setSearchQuery(e.target.value)}
-                    className="w-full pl-10 pr-12 py-3 bg-white border border-neutral-300 rounded-xl text-base focus:ring-2 focus:ring-[#141414] focus:outline-none shadow-sm"
+                    className="w-full pl-10 pr-12 py-2.5 sm:py-3 bg-white border border-neutral-300 rounded-xl text-sm sm:text-base focus:ring-2 focus:ring-[#141414] focus:outline-none shadow-sm"
                   />
                   <button
                     type="button"
@@ -1592,7 +2289,7 @@ export default function TabletConsumptionPOS({
                     <select
                       value={selectedCategory}
                       onChange={e => setSelectedCategory(e.target.value)}
-                      className="pl-9 pr-10 py-3 bg-white border border-neutral-300 text-neutral-800 font-bold rounded-xl text-sm focus:ring-2 focus:ring-emerald-600 focus:outline-none cursor-pointer appearance-none shadow-sm min-w-[140px]"
+                      className="pl-9 pr-9 py-2.5 sm:py-3 bg-white border border-neutral-300 text-neutral-800 font-bold rounded-xl text-xs sm:text-sm focus:ring-2 focus:ring-emerald-600 focus:outline-none cursor-pointer appearance-none shadow-sm min-w-[130px]"
                     >
                       {categories.map(cat => (
                         <option key={cat} value={cat}>
@@ -1602,10 +2299,8 @@ export default function TabletConsumptionPOS({
                         </option>
                       ))}
                     </select>
-                    <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2.5 text-neutral-500">
-                      <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
-                        <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/>
-                      </svg>
+                    <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-neutral-500">
+                      <ChevronDown className="h-4 w-4" />
                     </div>
                   </div>
 
@@ -1615,7 +2310,7 @@ export default function TabletConsumptionPOS({
                     <select
                       value={selectedLocation}
                       onChange={e => setSelectedLocation(e.target.value)}
-                      className="pl-9 pr-10 py-3 bg-white border border-neutral-300 text-neutral-800 font-bold rounded-xl text-sm focus:ring-2 focus:ring-emerald-600 focus:outline-none cursor-pointer appearance-none shadow-sm"
+                      className="pl-9 pr-9 py-2.5 sm:py-3 bg-white border border-neutral-300 text-neutral-800 font-bold rounded-xl text-xs sm:text-sm focus:ring-2 focus:ring-emerald-600 focus:outline-none cursor-pointer appearance-none shadow-sm"
                     >
                       {locations.map(loc => (
                         <option key={loc} value={loc}>
@@ -1625,10 +2320,8 @@ export default function TabletConsumptionPOS({
                         </option>
                       ))}
                     </select>
-                    <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2.5 text-neutral-500">
-                      <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
-                        <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/>
-                      </svg>
+                    <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-neutral-500">
+                      <ChevronDown className="h-4 w-4" />
                     </div>
                   </div>
 
@@ -1640,11 +2333,11 @@ export default function TabletConsumptionPOS({
                 </div>
               </div>
 
-              <div className="flex-1 overflow-y-auto p-4 bg-neutral-100">
+              <div className="flex-1 overflow-y-auto p-3 sm:p-4 bg-neutral-100">
                 {filteredIngredients.length === 0 ? (
-                  <div className="h-full flex flex-col items-center justify-center text-neutral-400">
+                  <div className="h-full flex flex-col items-center justify-center text-neutral-400 p-6">
                     <SearchX className="h-12 w-12 mb-4" />
-                    <p className="text-lg font-bold">
+                    <p className="text-base sm:text-lg font-bold text-center">
                       {language === "es" ? "No se encontraron artículos" : "No items found"}
                     </p>
                     <p className="text-xs text-neutral-500 max-w-xs text-center mt-1">
@@ -1658,194 +2351,254 @@ export default function TabletConsumptionPOS({
                     </p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                    {filteredIngredients.map(ing => (
-                      <button
-                        key={ing.id}
-                        onClick={() => {
-                          setSelectedIngredient(ing);
-                          setInputQty("");
-                          if (!department && posMode === "deduct") {
-                            setShowDeptModal(true);
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2.5 sm:gap-3">
+                    {filteredIngredients.map(ing => {
+                      const itemInBatch = batchItems.find(b => b.ingredient.id === ing.id);
+                      const isSelected = selectedIngredient?.id === ing.id;
+
+                      return (
+                        <button
+                          key={ing.id}
+                          onClick={() => handleSelectCard(ing)}
+                          title={
+                            itemInBatch || isSelected
+                              ? "Click card again to cancel & remove"
+                              : "Click to select item and type quantity"
                           }
-                        }}
-                        className={`text-left p-4 rounded-xl border-2 transition-all shadow-sm flex flex-col justify-between min-h-[120px] cursor-pointer ${
-                          selectedIngredient?.id === ing.id
-                            ? posMode === "deduct"
-                              ? "border-red-500 bg-red-50 shadow-md transform scale-[1.02]"
-                              : "border-emerald-500 bg-emerald-50 shadow-md transform scale-[1.02]"
-                            : "border-transparent bg-white hover:border-neutral-300 hover:shadow"
-                        }`}
-                      >
-                        <div>
-                          <div className="font-bold text-neutral-900 leading-tight line-clamp-2 text-base">
-                            {getIngredientDisplayName(ing)}
-                          </div>
-                          <div className="text-xs text-neutral-500 font-mono mt-2 flex flex-wrap gap-1.5 items-center">
-                            <span className="flex items-center gap-0.5">
-                              <MapPin className="h-3 w-3" /> {ing.location || "Unassigned"}
-                            </span>
-                            {ing.category && (
-                              <span className="text-[9px] text-amber-800 bg-amber-50 border border-amber-200 px-1 py-0.2 rounded font-bold uppercase tracking-wider">
-                                {ing.category}
+                          className={`text-left p-3.5 sm:p-4 rounded-xl border-2 transition-all shadow-sm flex flex-col justify-between min-h-[118px] cursor-pointer relative group ${
+                            isSelected
+                              ? posMode === "deduct"
+                                ? "border-red-500 bg-red-50/90 shadow-md ring-2 ring-red-400/40"
+                                : "border-emerald-500 bg-emerald-50/90 shadow-md ring-2 ring-emerald-400/40"
+                              : itemInBatch
+                                ? posMode === "deduct"
+                                ? "border-red-300 bg-red-50/40 shadow-xs hover:border-red-400"
+                                : "border-emerald-300 bg-emerald-50/40 shadow-xs hover:border-emerald-400"
+                                : "border-transparent bg-white hover:border-neutral-300 hover:shadow"
+                          }`}
+                        >
+                          <div>
+                            <div className="flex items-start justify-between gap-1.5 mb-1">
+                              <div className="font-bold text-neutral-900 leading-snug line-clamp-2 text-sm sm:text-base">
+                                {getIngredientDisplayName(ing)}
+                              </div>
+                              {itemInBatch && (
+                                <span className={`inline-flex items-center gap-1 text-[10px] font-mono font-bold px-2 py-0.5 rounded-full shrink-0 shadow-xs transition-colors ${
+                                  posMode === "deduct"
+                                    ? "bg-red-600 group-hover:bg-red-700 text-white"
+                                    : "bg-emerald-600 group-hover:bg-emerald-700 text-white"
+                                }`}
+                                title="Chosen in batch. Click card again to cancel."
+                                >
+                                  <Check className="h-3 w-3 stroke-[3]" />
+                                  <span>{itemInBatch.quantity} {itemInBatch.unit}</span>
+                                  <span className="text-[9px] opacity-80 ml-0.5">✕</span>
+                                </span>
+                              )}
+                              {!itemInBatch && isSelected && (
+                                <span className="inline-flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-500 text-white shrink-0 shadow-xs animate-pulse">
+                                  {language === "es" ? "Escriba..." : "Type Qty..."}
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-xs text-neutral-500 font-mono mt-1.5 flex flex-wrap gap-1.5 items-center">
+                              <span className="flex items-center gap-0.5">
+                                <MapPin className="h-3 w-3 text-neutral-400" /> {ing.location || "Unassigned"}
                               </span>
-                            )}
+                              {ing.category && (
+                                <span className="text-[9px] text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">
+                                  {ing.category}
+                                </span>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                        <div className="mt-4 flex items-center justify-between">
-                          <div className="text-xs font-bold text-neutral-700 bg-neutral-150 px-2 py-0.5 rounded">
-                            {ing.quantity} {ing.unit}
+                          <div className="mt-3 pt-2 border-t border-neutral-100 flex items-center justify-between">
+                            <div className="text-xs font-bold text-neutral-700 bg-neutral-100 px-2 py-0.5 rounded">
+                              {ing.quantity} {ing.unit}
+                            </div>
+                            <div className={`text-xs font-mono font-bold ${ing.inStock === 0 || ing.inStock === undefined ? 'text-red-700' : 'text-neutral-600'}`}>
+                              {getStockDisplay(ing)}
+                            </div>
                           </div>
-                          <div className={`text-xs font-mono font-bold ${ing.inStock === 0 || ing.inStock === undefined ? 'text-red-700' : 'text-neutral-500'}`}>
-                            {getStockDisplay(ing)}
-                          </div>
-                        </div>
-                      </button>
-                    ))}
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
               </div>
             </div>
 
             {/* Right column: Current Ticket / Numpad */}
-            <div className="w-[380px] flex flex-col bg-white shadow-xl z-20 overflow-hidden shrink-0">
-              <div className="p-4 bg-neutral-50 border-b border-neutral-200 flex-1 flex flex-col justify-between overflow-y-auto">
-                <div>
-                  <h2 className="text-xs font-bold text-neutral-500 mb-3 flex items-center gap-1.5">
-                    <Calculator className="h-3.5 w-3.5" /> 
-                    {posMode === "deduct" 
-                      ? (language === "es" ? "Deducir Cantidad" : "Deduct Quantity") 
-                      : (language === "es" ? "Recibir Cantidad" : "Receive Quantity")}
-                  </h2>
+            <div className="w-full md:w-[320px] lg:w-[360px] xl:w-[380px] flex flex-col bg-white shadow-xl z-20 overflow-hidden shrink-0">
+              <div className="p-3 sm:p-4 bg-neutral-50 border-b border-neutral-200 flex-1 flex flex-col justify-between overflow-y-auto min-h-0 space-y-3">
+                
+                {/* Batch Selection Status Header (shown when ingredients have been chosen) */}
+                {batchItems.length > 0 && (
+                  <div className="flex items-center justify-between px-3.5 py-2.5 bg-neutral-100 border border-neutral-200 rounded-xl text-xs shadow-2xs">
+                    <span className="font-bold text-neutral-800 font-mono flex items-center gap-2">
+                      <span className={`w-2.5 h-2.5 rounded-full ${posMode === "deduct" ? "bg-red-500 animate-pulse" : "bg-emerald-500 animate-pulse"}`} />
+                      {batchItems.length} {batchItems.length === 1 ? (language === "es" ? "artículo en lote" : "item chosen") : (language === "es" ? "artículos en lote" : "items chosen")}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleClearBatch}
+                      className="text-[11px] font-bold text-red-600 hover:text-red-700 hover:underline cursor-pointer"
+                    >
+                      {language === "es" ? "Deseleccionar todos" : "Clear all"}
+                    </button>
+                  </div>
+                )}
 
-                  {!selectedIngredient ? (
-                    <div className="h-32 flex flex-col items-center justify-center text-neutral-300 border-2 border-dashed border-neutral-200 rounded-xl">
-                      <Grid className="h-8 w-8 mb-1.5" />
-                      <p className="text-xs font-bold">
-                        {language === "es" ? "Seleccione un artículo de la izquierda" : "Select an item from left"}
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      <div className={`p-3 rounded-lg shadow-md transition-all ${
-                        posMode === "deduct" ? "bg-red-700 text-white" : "bg-emerald-600 text-white"
-                      }`}>
-                        <h3 className="font-bold text-base leading-tight mb-1 truncate">
+                {/* Active Item Editor Box */}
+                {!selectedIngredient ? (
+                  <div className="py-12 px-4 flex flex-col items-center justify-center text-neutral-400 border-2 border-dashed border-neutral-200 rounded-2xl text-center">
+                    <Grid className="h-8 w-8 mb-2 text-neutral-300" />
+                    <p className="text-sm font-bold text-neutral-700">
+                      {language === "es" ? "Seleccione un artículo de la izquierda" : "Select an item from left"}
+                    </p>
+                    <p className="text-xs text-neutral-400 mt-1 max-w-xs">
+                      {language === "es"
+                        ? "Toque cualquier tarjeta de inventario para ingresar su cantidad en libras o piezas."
+                        : "Tap any ingredient card on the left to enter its pound or pc."}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    <div className={`p-3 rounded-xl shadow-xs transition-all ${
+                      posMode === "deduct" ? "bg-red-700 text-white" : "bg-emerald-600 text-white"
+                    }`}>
+                      <div className="flex items-start justify-between gap-2 mb-1">
+                        <h3 className="font-bold text-xs sm:text-sm leading-tight truncate">
                           {getIngredientDisplayName(selectedIngredient)}
                         </h3>
-                        <p className="font-mono text-white/70 text-xs mb-2">
-                          {language === "es" ? "Stock Actual" : "Current Stock"}: {getStockDisplay(selectedIngredient)}
-                        </p>
-                        
-                        <div className="bg-white/10 rounded-md p-1.5 flex flex-col items-center justify-center min-h-[50px]">
-                          <div className="text-3xl font-mono font-bold">
-                            {inputQty || "0"}
-                          </div>
-                        </div>
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-black/20 text-white shrink-0 font-bold">
+                          {selectedIngredient.unit || "unit"}
+                        </span>
                       </div>
-
-                      <div>
-                        <div className="flex items-center justify-between mb-1.5">
-                          <div className="flex items-center gap-1.5">
-                            <label className="block text-[10px] font-bold text-neutral-500">
-                              {language === "es" ? "Unidad de Medida" : "Unit of Measure"}
-                            </label>
-                            {hiddenUnits.length > 0 && (
-                              <span className="text-[9px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.2 rounded">
-                                {allAvailableUnits.filter(u => hiddenUnits.some(hu => hu.toLowerCase() === u.toLowerCase())).length} {language === "es" ? "ocultas" : "hidden"}
-                              </span>
-                            )}
-                          </div>
-
-                          <button
-                            type="button"
-                            onClick={() => setShowHideUnitSelector(true)}
-                            className={`text-[9px] font-bold px-2 py-0.5 rounded flex items-center gap-1 transition-colors cursor-pointer border ${
-                              hiddenUnits.length > 0
-                                ? "text-amber-700 bg-amber-50 hover:bg-amber-100 border-amber-300"
-                                : "text-neutral-700 bg-neutral-100 hover:bg-neutral-200 border-neutral-300"
-                            }`}
-                            title={language === "es" ? "Abrir ventana para elegir unidades" : "Open pop-up to choose units"}
-                            id="pos-hide-unit-btn"
-                          >
-                            {hiddenUnits.length > 0 ? <EyeOff className="h-2.5 w-2.5" /> : <Eye className="h-2.5 w-2.5" />}
-                            <span>
-                              {hiddenUnits.length > 0
-                                ? (language === "es" ? `Unidades (${hiddenUnits.length} ocultas)` : `Units (${hiddenUnits.length} hidden)`)
-                                : (language === "es" ? "Elegir / Ocultar" : "Hide / Show units")}
-                            </span>
-                          </button>
-                        </div>
-
-                        {/* Visible Units Button Grid */}
-                        {visibleUnits.length > 0 ? (
-                          <div className={`grid gap-1.5 ${visibleUnits.length > 2 ? "grid-cols-3" : "grid-cols-2"}`}>
-                            {visibleUnits.map(u => {
-                              return (
-                                <button
-                                  key={u}
-                                  onClick={() => setSelectedUnit(u)}
-                                  className={`py-2 px-1 rounded font-bold text-xs transition-colors capitalize text-center truncate ${
-                                    selectedUnit === u
-                                      ? "bg-neutral-800 text-white cursor-pointer"
-                                      : "bg-neutral-100 text-neutral-600 hover:bg-neutral-200 cursor-pointer"
-                                  }`}
-                                  title={u}
-                                >
-                                  {u}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        ) : (
-                          <div className="p-3 bg-neutral-50 border border-neutral-200 rounded-xl text-center space-y-1.5">
-                            <p className="text-[10px] text-neutral-500 font-bold">
-                              {language === "es" ? "Todas las unidades están ocultas para este producto." : "All units are hidden for this item."}
-                            </p>
-                            <button
-                              type="button"
-                              onClick={() => setShowHideUnitSelector(true)}
-                              className="text-xs font-bold text-emerald-600 hover:text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-3 py-1 rounded-lg cursor-pointer inline-flex items-center gap-1"
-                            >
-                              <Eye className="h-3 w-3" />
-                              <span>{language === "es" ? "Elegir unidades para mostrar" : "Choose units to display"}</span>
-                            </button>
-                          </div>
-                        )}
+                      <p className="font-mono text-white/80 text-[11px] mb-1.5">
+                        {language === "es" ? "Stock Actual" : "Current Stock"}: {getStockDisplay(selectedIngredient)}
+                      </p>
+                      
+                      {/* Interactive Quantity Field */}
+                      <div className="bg-black/30 border border-white/20 rounded-xl p-1.5 flex items-center justify-center min-h-[46px] relative">
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={inputQty}
+                          placeholder="0"
+                          onChange={(e) => {
+                            const val = e.target.value.replace(/[^0-9.]/g, '');
+                            const parts = val.split('.');
+                            const cleanVal = parts.length > 2 ? parts[0] + '.' + parts.slice(1).join('') : val;
+                            updateQtyValue(cleanVal);
+                          }}
+                          className="w-full text-center bg-transparent text-2xl sm:text-3xl font-mono font-black tracking-wider text-white focus:outline-none placeholder-white/30"
+                          title="Type quantity in pounds or pieces"
+                        />
+                        <span className="absolute right-3 text-xs sm:text-sm text-white/80 font-normal pointer-events-none uppercase font-mono">
+                          {selectedUnit}
+                        </span>
                       </div>
                     </div>
-                  )}
-                </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-1.5">
+                          <label className="block text-[9px] font-bold text-neutral-500 uppercase tracking-wider font-mono">
+                            {language === "es" ? "Unidad de Medida" : "Unit of Measure"}
+                          </label>
+                          {hiddenUnits.length > 0 && (
+                            <span className="text-[9px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1 py-0.1 rounded">
+                              {allAvailableUnits.filter(u => hiddenUnits.some(hu => hu.toLowerCase() === u.toLowerCase())).length} {language === "es" ? "ocultas" : "hidden"}
+                            </span>
+                          )}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => setShowHideUnitSelector(true)}
+                          className="text-[9px] font-bold px-2 py-0.5 rounded-lg flex items-center gap-1 transition-colors cursor-pointer border text-neutral-700 bg-white hover:bg-neutral-100 border-neutral-300"
+                          title="Units"
+                        >
+                          <Eye className="h-2.5 w-2.5" />
+                          <span>{language === "es" ? "Elegir / Ocultar" : "Units"}</span>
+                        </button>
+                      </div>
+
+                      {/* Visible Units Button Grid */}
+                      {visibleUnits.length > 0 && (
+                        <div className={`grid gap-1 mb-2 ${visibleUnits.length > 2 ? "grid-cols-3" : "grid-cols-2"}`}>
+                          {visibleUnits.map(u => (
+                            <button
+                              key={u}
+                              onClick={() => handleSelectUnit(u)}
+                              className={`py-1.5 px-1 rounded-lg font-bold text-[11px] transition-all capitalize text-center truncate cursor-pointer ${
+                                selectedUnit.toLowerCase() === u.toLowerCase()
+                                  ? "bg-neutral-900 text-white shadow-xs"
+                                  : "bg-white border border-neutral-200 text-neutral-700 hover:bg-neutral-100"
+                              }`}
+                              title={u}
+                            >
+                              {u === "lb" ? "lb (pound)" : u === "pc" ? "pc (piece)" : u}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Add to Batch / Update Button */}
+                      <button
+                        type="button"
+                        onClick={handleAddOrUpdateBatch}
+                        className={`w-full py-2.5 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-xs cursor-pointer ${
+                          batchItems.some(b => b.ingredient.id === selectedIngredient.id)
+                            ? "bg-neutral-800 hover:bg-neutral-900 text-white"
+                            : posMode === "deduct"
+                              ? "bg-red-50 hover:bg-red-100 text-red-700 border border-red-200"
+                              : "bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200"
+                        }`}
+                      >
+                        <Check className="h-3.5 w-3.5" />
+                        <span>
+                          {batchItems.some(b => b.ingredient.id === selectedIngredient.id)
+                            ? (language === "es" ? "✓ Elegido en Lote" : "✓ Chosen in Batch")
+                            : (language === "es" ? "+ Elegir artículo" : "+ Choose Ingredient")}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
-              <div className="p-4 bg-white space-y-3 shrink-0 border-t border-neutral-100">
+              {/* 3. Numpad & Submit Action */}
+              <div className="p-3 sm:p-4 bg-white space-y-2 shrink-0 border-t border-neutral-200">
                 {/* Numpad */}
-                <div className="grid grid-cols-3 gap-2 mb-2">
+                <div className="grid grid-cols-3 gap-1.5 sm:gap-2 mb-1">
                   {["7", "8", "9", "4", "5", "6", "1", "2", "3", "C", "0", "."].map(btn => (
                     <button
                       key={btn}
                       disabled={!selectedIngredient}
                       onClick={() => handleNumClick(btn)}
-                      className={`h-11 text-xl font-bold font-mono rounded-lg transition-colors cursor-pointer ${
+                      className={`h-10 sm:h-11 text-lg font-bold font-mono rounded-xl transition-all active:scale-95 cursor-pointer shadow-2xs ${
                         !selectedIngredient 
-                          ? "bg-neutral-50 text-neutral-300 cursor-not-allowed"
+                          ? "bg-neutral-100 text-neutral-300 cursor-not-allowed border border-neutral-200"
                           : btn === "C"
-                            ? "bg-red-100 text-red-600 hover:bg-red-200"
-                            : "bg-neutral-100 text-neutral-800 hover:bg-neutral-200 active:bg-neutral-300"
+                            ? "bg-red-50 text-red-600 hover:bg-red-100 border border-red-200"
+                            : "bg-neutral-100 text-neutral-900 hover:bg-neutral-200 active:bg-neutral-300 border border-neutral-200"
                       }`}
                     >
                       {btn}
                     </button>
                   ))}
-                  <div className="col-span-3 grid grid-cols-2 gap-2 mt-1">
+                  <div className="col-span-3 grid grid-cols-2 gap-2 mt-0.5">
                     <button
                       disabled={!selectedIngredient}
                       onClick={() => handleNumClick("DEL")}
-                      className="h-10 bg-neutral-200 hover:bg-neutral-300 text-neutral-800 text-xs font-bold rounded-lg disabled:opacity-50 cursor-pointer"
+                      className="h-9 bg-neutral-200 hover:bg-neutral-300 text-neutral-800 text-xs font-bold rounded-xl disabled:opacity-50 cursor-pointer flex items-center justify-center gap-1"
                     >
-                      Delete
+                      <Delete className="h-3.5 w-3.5" />
+                      <span>Delete</span>
                     </button>
-                    <div className="flex items-center gap-1.5 justify-center">
+                    <div className="flex items-center gap-1.5 justify-center bg-neutral-50 border border-neutral-200 rounded-xl px-2">
                       <input
                         type="checkbox"
                         id="autoUpdateTablet"
@@ -1853,41 +2606,55 @@ export default function TabletConsumptionPOS({
                         onChange={e => setAutoUpdateStock(e.target.checked)}
                         className="w-3.5 h-3.5 text-emerald-600 focus:ring-emerald-500 rounded border-neutral-300 cursor-pointer"
                       />
-                      <label htmlFor="autoUpdateTablet" className="text-[9px] font-bold text-neutral-500 cursor-pointer">
+                      <label htmlFor="autoUpdateTablet" className="text-[10px] font-bold text-neutral-600 cursor-pointer select-none">
                         {posMode === "deduct" ? "Auto-Deduct" : "Auto-Update"}
                       </label>
                     </div>
                   </div>
                 </div>
 
-                <button
-                  disabled={!selectedIngredient || !inputQty || submitting}
-                  onClick={() => {
-                    const qtyNum = parseFloat(inputQty);
-                    if (isNaN(qtyNum) || qtyNum <= 0) {
-                      setMessage({ type: "error", text: "Enter a valid quantity." });
-                      return;
-                    }
-                    const finalDepartment = department;
-                    if (!finalDepartment && posMode === "deduct") {
-                      setMessage({ type: "error", text: "Please select a department first." });
-                      setShowDeptModal(true);
-                      return;
-                    }
-                    setOperatorNameInput("");
-                    setShowSignaturePage(true);
-                  }}
-                  className={`w-full h-11 rounded-lg flex items-center justify-center gap-1.5 text-sm font-bold transition-all cursor-pointer ${
-                    !selectedIngredient || !inputQty || submitting
-                      ? "bg-neutral-200 text-neutral-400 cursor-not-allowed"
-                      : posMode === "deduct"
-                        ? "bg-red-600 hover:bg-red-700 text-white shadow-md active:scale-[0.98]"
-                        : "bg-emerald-600 hover:bg-emerald-700 text-white shadow-md active:scale-[0.98]"
-                  }`}
-                >
-                  <CheckCircle className="h-4 w-4" />
-                  <span>{posMode === "deduct" ? "Record Consumption" : "Record Receipt / Inbound"}</span>
-                </button>
+                {/* Bottom Action: Review & Record Consumption / Inbound */}
+                {(() => {
+                  const activeInputQtyNum = parseFloat(inputQty);
+                  const hasActiveValidInput = Boolean(selectedIngredient && !isNaN(activeInputQtyNum) && activeInputQtyNum > 0);
+                  const isCurrentSelectedInBatch = Boolean(selectedIngredient && batchItems.some(b => b.ingredient.id === selectedIngredient.id));
+                  let effectiveCount = batchItems.length;
+                  if (hasActiveValidInput && !isCurrentSelectedInBatch) {
+                    effectiveCount += 1;
+                  }
+
+                  const isDisabled = effectiveCount === 0 || submitting;
+
+                  return (
+                    <button
+                      disabled={isDisabled}
+                      onClick={handleProceedToReview}
+                      className={`w-full h-12 rounded-xl flex flex-col items-center justify-center font-bold transition-all cursor-pointer shadow-md active:scale-[0.98] ${
+                        isDisabled
+                          ? "bg-neutral-200 text-neutral-400 cursor-not-allowed shadow-none"
+                          : posMode === "deduct"
+                            ? "bg-red-600 hover:bg-red-700 text-white shadow-red-900/30"
+                            : "bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-900/30"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 text-xs sm:text-sm">
+                        <CheckCircle className="h-4 w-4" />
+                        <span>
+                          {posMode === "deduct" 
+                            ? (language === "es" 
+                                ? `Revisar y Deducir (${effectiveCount})` 
+                                : `Record Consumption (${effectiveCount} ${effectiveCount === 1 ? 'item' : 'items'})`)
+                            : (language === "es" 
+                                ? `Revisar y Recibir (${effectiveCount})` 
+                                : `Record Receipt / Inbound (${effectiveCount} ${effectiveCount === 1 ? 'item' : 'items'})`)}
+                        </span>
+                      </div>
+                      <span className="text-[10px] opacity-80 font-normal">
+                        Proceed to Review & Sign-Off →
+                      </span>
+                    </button>
+                  );
+                })()}
               </div>
             </div>
           </>
@@ -2354,6 +3121,23 @@ export default function TabletConsumptionPOS({
           </div>
         )}
       </div>
+
+      {showSwitchOperatorModal && (
+        <div className="fixed inset-0 z-60 bg-black/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="w-full max-w-4xl my-auto">
+            <TabletPinKeypad
+              allStaff={allStaff}
+              user={user}
+              onLogin={(op) => {
+                setActiveOperator(op);
+                setShowSwitchOperatorModal(false);
+              }}
+              onClose={() => setShowSwitchOperatorModal(false)}
+              isModal={true}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

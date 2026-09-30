@@ -191,13 +191,60 @@ export function getFormattedBaseUnitInfo(
   return "";
 }
 
+export function extractWeightSpecFromName(name?: string): { weight: number; unit: string } | null {
+  if (!name || typeof name !== "string") return null;
+  const cleanName = name.trim();
+  
+  // Match multi-pack patterns like "12x500g", "4x5lb", "6x1gal", "24x12oz", "10x1lb"
+  const multiPackMatch = cleanName.match(/(\d+)\s*[xX*]\s*(\d+(?:\.\d+)?)\s*(lb|lbs|pound|pounds|#|kg|kilogram|g|gram|oz|ounce|gal|gallon|l|liter|ml)\b/i);
+  if (multiPackMatch) {
+    const packCount = parseFloat(multiPackMatch[1]);
+    const singleWeight = parseFloat(multiPackMatch[2]);
+    const rawUnit = multiPackMatch[3].toLowerCase();
+    let normUnit = "lb";
+    if (["lb", "lbs", "pound", "pounds", "#"].includes(rawUnit)) normUnit = "lb";
+    else if (["kg", "kilogram"].includes(rawUnit)) normUnit = "kg";
+    else if (["g", "gram"].includes(rawUnit)) normUnit = "g";
+    else if (["oz", "ounce"].includes(rawUnit)) normUnit = "oz";
+    else if (["gal", "gallon"].includes(rawUnit)) normUnit = "gal";
+    else if (["l", "liter"].includes(rawUnit)) normUnit = "L";
+    else if (["ml"].includes(rawUnit)) normUnit = "ml";
+    
+    if (packCount > 0 && singleWeight > 0) {
+      return { weight: packCount * singleWeight, unit: normUnit };
+    }
+  }
+
+  // Match single weight patterns like "50lb", "50 lbs", "50#", "25kg", "500g", "1 Gallon", "5 Gal", "16 oz", "5L"
+  const singleWeightMatch = cleanName.match(/(\d+(?:\.\d+)?)\s*(lb|lbs|pound|pounds|#|kg|kilogram|g|gram|oz|ounce|gal|gallon|l|liter|ml)\b/i);
+  if (singleWeightMatch) {
+    const weightVal = parseFloat(singleWeightMatch[1]);
+    const rawUnit = singleWeightMatch[2].toLowerCase();
+    let normUnit = "lb";
+    if (["lb", "lbs", "pound", "pounds", "#"].includes(rawUnit)) normUnit = "lb";
+    else if (["kg", "kilogram"].includes(rawUnit)) normUnit = "kg";
+    else if (["g", "gram"].includes(rawUnit)) normUnit = "g";
+    else if (["oz", "ounce"].includes(rawUnit)) normUnit = "oz";
+    else if (["gal", "gallon"].includes(rawUnit)) normUnit = "gal";
+    else if (["l", "liter"].includes(rawUnit)) normUnit = "L";
+    else if (["ml"].includes(rawUnit)) normUnit = "ml";
+    
+    if (weightVal > 0) {
+      return { weight: weightVal, unit: normUnit };
+    }
+  }
+
+  return null;
+}
+
 export function calculatePoundData(
   count: number,
   unit: string,
   weightPerCase?: number,
   weightPerCaseUnit?: string,
   pcsPerPound?: number,
-  quantity?: number
+  quantity?: number,
+  itemName?: string
 ): { lbs: number; hasWeightSpec: boolean; label: string } {
   if (count === undefined || count === null || isNaN(count)) {
     return { lbs: 0, hasWeightSpec: false, label: "0.00 lbs" };
@@ -238,9 +285,20 @@ export function calculatePoundData(
     return { lbs, hasWeightSpec: true, label: `${lbs.toFixed(2)} lbs (vol eq.)` };
   }
 
+  // Fallback to extract weight spec from item name if weightPerCase is missing
+  let effectiveWeight = weightPerCase;
+  let effectiveWeightUnit = weightPerCaseUnit || "lb";
+  if ((!effectiveWeight || effectiveWeight <= 0) && itemName) {
+    const extracted = extractWeightSpecFromName(itemName);
+    if (extracted) {
+      effectiveWeight = extracted.weight;
+      effectiveWeightUnit = extracted.unit;
+    }
+  }
+
   // 6. Pack / Pcs / Case / Box / Bag / Bottle / Can / Container / Each / Ct
-  if (weightPerCase && weightPerCase > 0) {
-    const gramsPerPack = getGramsOrMlEquivalent(weightPerCase, weightPerCaseUnit || "lb");
+  if (effectiveWeight && effectiveWeight > 0) {
+    const gramsPerPack = getGramsOrMlEquivalent(effectiveWeight, effectiveWeightUnit || "lb");
     const lbsPerPack = gramsPerPack / 453.59237;
     const totalLbs = count * lbsPerPack;
     return { lbs: totalLbs, hasWeightSpec: true, label: `${totalLbs.toFixed(2)} lbs` };

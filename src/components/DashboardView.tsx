@@ -17,7 +17,8 @@ import {
   FileSpreadsheet, 
   Info,
   Clock,
-  Layers
+  Layers,
+  Database
 } from "lucide-react";
 
 interface DashboardViewProps {
@@ -405,6 +406,29 @@ export default function DashboardView({
             </button>
           ))}
         </div>
+      </div>
+
+      {/* Re-Design Architecture Blueprint Banner */}
+      <div className="bg-gradient-to-r from-indigo-900 via-slate-900 to-indigo-950 text-white border border-indigo-800/60 p-5 rounded-2xl shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 text-indigo-300 text-xs font-semibold">
+            <Database className="h-4 w-4" />
+            <span>Commercial Multi-Tenant System Blueprint</span>
+          </div>
+          <h3 className="text-sm sm:text-base font-bold text-white">
+            Re-architecting for Outside Clients: PostgreSQL Ledger & Offline POS
+          </h3>
+          <p className="text-xs text-indigo-200/80 max-w-2xl leading-relaxed">
+            Explore the complete production-grade blueprint: double-entry inventory ledger, Row-Level Security tenant isolation, offline kitchen sync, and distributor EDI pipelines.
+          </p>
+        </div>
+        <button
+          onClick={() => onSwitchSection("system-architecture")}
+          className="inline-flex items-center gap-2 px-4 py-2.5 bg-indigo-500 hover:bg-indigo-400 text-white text-xs font-bold rounded-xl transition-all shadow-sm cursor-pointer whitespace-nowrap self-start sm:self-center"
+        >
+          <span>Open System Blueprint</span>
+          <ArrowRight className="h-3.5 w-3.5" />
+        </button>
       </div>
 
       {/* Custom Date Inputs (only shown if custom selected) */}

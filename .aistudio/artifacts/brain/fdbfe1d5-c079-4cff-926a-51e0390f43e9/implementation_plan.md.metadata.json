@@ -1,0 +1,6 @@
+{
+  "summary":  "Comprehensive architectural blueprint and system redesign specification for rebuilding the restaurant inventory and consumption management platform as a commercial-grade, multi-tenant B2B SaaS product with relational PostgreSQL ledger constraints, offline-first tablet POS sync, automated distributor invoice ingestion, and granular RBAC audit compliance.",
+  "updatedAt":  "2026-09-30T18:20:23.203424106Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

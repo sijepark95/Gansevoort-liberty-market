@@ -286,7 +286,7 @@ export default function AIParserView({
 
   const activeItem = queue.find(q => q.id === activeQueueId);
 
-  // Sync selected indices when active item changes
+  // Sync selected indices and stock preservation mode when active item changes
   useEffect(() => {
     if (activeItem && activeItem.items) {
       // By default, select all items that are not skipped
@@ -294,10 +294,17 @@ export default function AIParserView({
         .map((item, idx) => (item.matchAction !== "skip" ? idx : -1))
         .filter(idx => idx !== -1);
       setSelectedIndices(nonSkipped);
+
+      // Invoices pile stock by default; only explicit price correction documents default to preserving stock
+      if (activeItem.documentType === "price_correction") {
+        setPreserveStockCounts(true);
+      } else {
+        setPreserveStockCounts(false);
+      }
     } else {
       setSelectedIndices([]);
     }
-  }, [activeQueueId, activeItem?.items.length]);
+  }, [activeQueueId, activeItem?.items?.length, activeItem?.documentType]);
 
   // Helper to find recipes impacted by an ingredient
   const getImpactedRecipes = (ingredientId?: string, ingredientName?: string) => {
@@ -2160,19 +2167,32 @@ export default function AIParserView({
 
                       {/* Application Settings & Trigger Actions */}
                       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-neutral-50 p-4 rounded-xl border border-neutral-200">
-                        <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-neutral-800">
-                          <input 
-                            type="checkbox"
-                            checked={preserveStockCounts}
-                            onChange={(e) => setPreserveStockCounts(e.target.checked)}
-                            className="rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
-                          />
-                          <span className="flex items-center gap-1">
-                            <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                            <span>Preserve on-hand inventory stock counts</span>
-                            <span className="text-neutral-400 font-normal font-mono text-[11px]">(Update catalog rates only)</span>
-                          </span>
-                        </label>
+                        <div className="space-y-1">
+                          <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-neutral-800">
+                            <input 
+                              type="checkbox"
+                              checked={preserveStockCounts}
+                              onChange={(e) => setPreserveStockCounts(e.target.checked)}
+                              className="rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
+                            />
+                            <span className="flex items-center gap-1">
+                              <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                              <span>Preserve on-hand inventory stock counts</span>
+                              <span className="text-neutral-400 font-normal font-mono text-[11px]">(Update catalog rates only)</span>
+                            </span>
+                          </label>
+                          <div className="text-[11px] font-sans pl-6">
+                            {preserveStockCounts ? (
+                              <span className="text-amber-700 font-medium">
+                                ⚠️ <strong>Price-only mode:</strong> Stock counts in the Stocktake Count Sheet will remain unchanged.
+                              </span>
+                            ) : (
+                              <span className="text-emerald-700 font-medium">
+                                📦 <strong>Stock Intake mode:</strong> Quantities will pile directly onto On-Hand Stock (Pounds / lbs) in the Stocktake Count Sheet.
+                              </span>
+                            )}
+                          </div>
+                        </div>
 
                         <div className="flex items-center gap-2">
                           <button

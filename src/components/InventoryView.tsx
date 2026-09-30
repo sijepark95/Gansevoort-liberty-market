@@ -34,10 +34,10 @@ import {
   CalendarRange
 } from "lucide-react";
 import { Ingredient, ConsumptionLog, Recipe, Department, Employee } from "../types";
-import { db, safeAddDoc, safeDeleteDoc } from "../lib/firebase";
+import { db, safeAddDoc, safeUpdateDoc, safeDeleteDoc } from "../lib/firebase";
 import { getNormalizedVendorKey } from "../lib/vendorUtils";
 import { getIngredientStandardRate } from "./IngredientsView";
-import { getGramsOrMlEquivalent, calculatePoundData, convertInputToNativeQty, calculateIngredientUnitPrice, getConsumptionQtyDetail } from "../lib/unitConverter";
+import { getGramsOrMlEquivalent, calculatePoundData, convertInputToNativeQty, calculateIngredientUnitPrice, getConsumptionQtyDetail, extractWeightSpecFromName, convertFromGrams } from "../lib/unitConverter";
 import TabletConsumptionPOS from "./TabletConsumptionPOS";
 import { ConsumptionDateRangeCalendar } from "./ConsumptionDateRangeCalendar";
 import { collection, query, where, onSnapshot, limit } from "firebase/firestore";
@@ -113,6 +113,7 @@ const MASS_VOLUME_UNITS_SET = [
 
 export function getItemAssetValue(
   item: {
+    name?: string;
     unit: string;
     price: number;
     quantity: number;
@@ -153,7 +154,8 @@ export function getItemAssetValue(
     wPerCase,
     wPerCaseUnit,
     pcsRatio,
-    item.quantity
+    item.quantity,
+    item.name
   );
 
   if (poundInfo.lbs > 0) {
@@ -1242,7 +1244,7 @@ export default function InventoryView({
         const itemVal = getItemAssetValue(ing, currentCnt, wPerCase, wPerCaseUnit, pcsRatio);
         totalValue += itemVal;
 
-        const pInfo = calculatePoundData(currentCnt, ing.unit, wPerCase, wPerCaseUnit, pcsRatio, ing.quantity);
+        const pInfo = calculatePoundData(currentCnt, ing.unit, wPerCase, wPerCaseUnit, pcsRatio, ing.quantity, ing.name);
         totalPounds += pInfo.lbs;
 
         if (ing.stock <= ing.minStock || ing.stock === 0) {
@@ -2012,21 +2014,64 @@ export default function InventoryView({
         
         let targetId = "";
         
+        // Extract weight specs from item name if available
+        const nameSpec = extractWeightSpecFromName(item.name);
+        const effectiveWpc = nameSpec?.weight;
+        const effectiveWpcUnit = nameSpec?.unit || "lb";
+
         if (matchingIng && matchingIng.id) {
+          // Determine target unit and incoming unit
+          const targetUnit = (matchingIng.unit || item.unit || "ea").toLowerCase().trim();
+          const incomingUnit = (item.unit || targetUnit).toLowerCase().trim();
+          const matchingWpc = matchingIng.weightPerCase || effectiveWpc;
+          const matchingWpcUnit = matchingIng.weightPerCaseUnit || effectiveWpcUnit || "lb";
+
+          let addedStock = qty;
+          if (incomingUnit !== targetUnit) {
+            const incomingPounds = calculatePoundData(qty, incomingUnit, matchingWpc, matchingWpcUnit, matchingIng.pcsPerPound, undefined, item.name).lbs;
+            if (["lb", "lbs", "pound", "pounds"].includes(targetUnit) && incomingPounds > 0) {
+              addedStock = incomingPounds;
+            } else if (["oz", "ounce", "ounces"].includes(targetUnit) && incomingPounds > 0) {
+              addedStock = incomingPounds * 16;
+            } else if (["kg", "kilogram", "kilograms"].includes(targetUnit) && incomingPounds > 0) {
+              addedStock = incomingPounds * 0.45359237;
+            } else if (["g", "gram", "grams"].includes(targetUnit) && incomingPounds > 0) {
+              addedStock = incomingPounds * 453.59237;
+            } else if (["case", "cases", "box", "boxes", "bag", "bags", "pack", "packs"].includes(targetUnit) && matchingWpc && matchingWpc > 0) {
+              const caseLbs = calculatePoundData(1, targetUnit, matchingWpc, matchingWpcUnit).lbs;
+              if (caseLbs > 0) addedStock = incomingPounds / caseLbs;
+            } else {
+              const gEq = getGramsOrMlEquivalent(qty, incomingUnit);
+              if (gEq > 0) {
+                const converted = convertFromGrams(gEq, targetUnit);
+                if (converted > 0) addedStock = converted;
+              }
+            }
+          }
+
           // Update existing ingredient to pile stock
-          const newStock = (matchingIng.inStock || 0) + qty;
-          const newPrice = price > 0 ? price : matchingIng.price;
+          const currentStock = typeof matchingIng.inStock === "number" ? matchingIng.inStock : 0;
+          const newStock = currentStock + addedStock;
+          const newPrice = price > 0 ? (price / (addedStock > 0 ? addedStock : 1)) : matchingIng.price;
           
           await safeUpdateDoc("ingredients", matchingIng.id, {
             inStock: newStock,
             price: newPrice,
+            ...(matchingWpc && matchingWpc > 0 ? {
+              weightPerCase: matchingWpc,
+              weightPerCaseUnit: matchingWpcUnit
+            } : {}),
             updatedAt: new Date().toISOString()
           });
           
           localIngredientsMap.set(matchingIng.id, {
             ...matchingIng,
             inStock: newStock,
-            price: newPrice
+            price: newPrice,
+            ...(matchingWpc && matchingWpc > 0 ? {
+              weightPerCase: matchingWpc,
+              weightPerCaseUnit: matchingWpcUnit
+            } : {})
           });
           
           targetId = matchingIng.id;
@@ -2041,6 +2086,10 @@ export default function InventoryView({
             quantity: 1,
             inStock: qty,
             ownerId: targetOwnerId,
+            ...(effectiveWpc && effectiveWpc > 0 ? {
+              weightPerCase: effectiveWpc,
+              weightPerCaseUnit: effectiveWpcUnit
+            } : {}),
             createdAt: new Date().toISOString()
           });
           targetId = newDocRef.id;
@@ -2051,7 +2100,11 @@ export default function InventoryView({
             name: item.name,
             inStock: qty,
             price: price,
-            unit: item.unit || "ea"
+            unit: item.unit || "ea",
+            ...(effectiveWpc && effectiveWpc > 0 ? {
+              weightPerCase: effectiveWpc,
+              weightPerCaseUnit: effectiveWpcUnit
+            } : {})
           });
         }
         
@@ -2998,13 +3051,22 @@ export default function InventoryView({
                         ? draftPcsPerPound[item.id!]
                         : item.pcsPerPound;
 
+                      const nameInferredSpec = extractWeightSpecFromName(currentName);
+                      const effectiveWeightPerCase = (currentWeightPerCase && currentWeightPerCase > 0)
+                        ? currentWeightPerCase
+                        : nameInferredSpec?.weight;
+                      const effectiveWeightPerCaseUnit = (currentWeightPerCase && currentWeightPerCase > 0)
+                        ? currentWeightPerCaseUnit
+                        : (nameInferredSpec?.unit || "lb");
+
                       const poundInfo = calculatePoundData(
                         currentCount,
                         item.unit,
-                        currentWeightPerCase,
-                        currentWeightPerCaseUnit,
+                        effectiveWeightPerCase,
+                        effectiveWeightPerCaseUnit,
                         currentPcsPerPound,
-                        item.quantity
+                        item.quantity,
+                        currentName
                       );
 
                       const rateInfo = getIngredientStandardRate(item);
